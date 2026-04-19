@@ -103,6 +103,9 @@ pnpm db:migrate --name your_change_name
 
 ## Stripe Webhooks
 
+Detailed local setup and troubleshooting live in
+[`docs/stripe-local-debug.md`](docs/stripe-local-debug.md).
+
 For local webhook testing, run:
 
 ```bash

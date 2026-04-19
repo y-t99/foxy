@@ -2,8 +2,11 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "foxy",
-  description: "A Next.js and Prisma SQLite foundation for foxy.",
+  title: {
+    default: "foxy",
+    template: "%s | foxy",
+  },
+  description: "A calm content workspace for generating and managing results.",
 };
 
 export default function RootLayout({

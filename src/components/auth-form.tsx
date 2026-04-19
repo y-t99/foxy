@@ -21,7 +21,7 @@ function SubmitButton({ label }: { label: string }) {
 
   return (
     <button
-      className="h-11 rounded-md bg-[#0f766e] px-4 text-sm font-semibold text-white transition hover:bg-[#115e59] disabled:cursor-not-allowed disabled:opacity-60"
+      className="inline-flex w-full items-center justify-center rounded-full bg-[var(--color-foreground)] px-5 py-3 text-sm font-medium text-[var(--color-surface)] transition hover:opacity-92 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
       disabled={pending}
       type="submit"
     >
@@ -41,31 +41,34 @@ export function AuthForm({
   const [state, formAction] = useActionState(action, initialState);
 
   return (
-    <form action={formAction} className="grid gap-4">
+    <form action={formAction} className="grid gap-5">
       {mode === "register" ? (
-        <label className="grid gap-2 text-sm font-medium text-[#364152]">
+        <label className="grid gap-2 text-sm font-medium text-[var(--color-foreground)]">
           Name
           <input
-            className="h-11 rounded-md border border-[#d9dee8] bg-white px-3 text-base text-[#101828] outline-none ring-[#0f766e] focus:ring-2"
+            autoComplete="name"
+            className="h-12 rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-background)] px-4 text-base text-[var(--color-foreground)] outline-none transition focus:border-[var(--color-line-strong)]"
             name="name"
             required
             type="text"
           />
         </label>
       ) : null}
-      <label className="grid gap-2 text-sm font-medium text-[#364152]">
+      <label className="grid gap-2 text-sm font-medium text-[var(--color-foreground)]">
         Email
         <input
-          className="h-11 rounded-md border border-[#d9dee8] bg-white px-3 text-base text-[#101828] outline-none ring-[#0f766e] focus:ring-2"
+          autoComplete="email"
+          className="h-12 rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-background)] px-4 text-base text-[var(--color-foreground)] outline-none transition focus:border-[var(--color-line-strong)]"
           name="email"
           required
           type="email"
         />
       </label>
-      <label className="grid gap-2 text-sm font-medium text-[#364152]">
+      <label className="grid gap-2 text-sm font-medium text-[var(--color-foreground)]">
         Password
         <input
-          className="h-11 rounded-md border border-[#d9dee8] bg-white px-3 text-base text-[#101828] outline-none ring-[#0f766e] focus:ring-2"
+          autoComplete={mode === "login" ? "current-password" : "new-password"}
+          className="h-12 rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-background)] px-4 text-base text-[var(--color-foreground)] outline-none transition focus:border-[var(--color-line-strong)]"
           minLength={8}
           name="password"
           required
@@ -73,14 +76,21 @@ export function AuthForm({
         />
       </label>
       {state.error ? (
-        <p className="rounded-md border border-[#f0b4a8] bg-[#fff3f0] px-3 py-2 text-sm text-[#9c2f1c]">
+        <p
+          aria-live="polite"
+          className="rounded-[var(--radius-sm)] border border-[var(--color-note-border)] bg-[var(--color-note-bg)] px-4 py-3 text-sm leading-7 text-[var(--color-note-foreground)]"
+          role="alert"
+        >
           {state.error}
         </p>
       ) : null}
       <SubmitButton label={buttonLabel} />
-      <p className="text-sm text-[#667085]">
+      <p className="text-sm leading-7 text-[var(--color-muted)]">
         {alternateText}{" "}
-        <Link className="font-semibold text-[#0f766e]" href={alternateHref}>
+        <Link
+          className="font-medium text-[var(--color-foreground)] underline-offset-4 transition hover:underline"
+          href={alternateHref}
+        >
           {alternateLabel}
         </Link>
       </p>

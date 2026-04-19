@@ -1,26 +1,97 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light;
+  --background: oklch(0.982 0.004 95);
+  --surface: oklch(0.993 0.002 95);
+  --surface-muted: oklch(0.972 0.004 95);
+  --foreground: oklch(0.246 0.01 95);
+  --foreground-soft: oklch(0.365 0.01 95);
+  --muted: oklch(0.554 0.012 95);
+  --line: oklch(0.906 0.005 95);
+  --line-strong: oklch(0.858 0.006 95);
+  --accent: oklch(0.39 0.014 95);
+  --success: oklch(0.47 0.063 154);
+  --success-bg: oklch(0.956 0.014 154);
+  --success-border: oklch(0.89 0.016 154);
+  --note-bg: oklch(0.976 0.004 95);
+  --note-border: oklch(0.888 0.006 95);
+  --note-foreground: oklch(0.41 0.013 95);
+  --focus: oklch(0.69 0.042 252);
+  --shadow-soft: 0 24px 64px -40px color-mix(in oklab, var(--foreground) 24%, transparent);
+  --radius-sm: 0.9rem;
+  --radius-md: 1.2rem;
+  --radius-lg: 1.8rem;
+  --shell-max: 72rem;
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
   --color-foreground: var(--foreground);
-  --font-sans: Arial, Helvetica, sans-serif;
-  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --color-foreground-soft: var(--foreground-soft);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-success: var(--success);
+  --color-success-bg: var(--success-bg);
+  --color-success-border: var(--success-border);
+  --color-note-bg: var(--note-bg);
+  --color-note-border: var(--note-border);
+  --color-note-foreground: var(--note-foreground);
+  --font-sans:
+    "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Geist Sans",
+    "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", "SF Mono", "JetBrains Mono", monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--background);
 }
 
 body {
-  background: var(--background);
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top, oklch(0.995 0.004 95), transparent 38%),
+    var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  font-kerning: normal;
+  text-rendering: optimizeLegibility;
+}
+
+a,
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--foreground) 12%, var(--background));
+  color: var(--foreground);
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }
