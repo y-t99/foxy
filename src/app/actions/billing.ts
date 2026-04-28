@@ -8,10 +8,19 @@ import {
   getRequiredEnv,
   getStripeCheckoutConfigStatus,
 } from "@/lib/env";
-import { ensureBasicProduct } from "@/lib/products";
+import {
+  DEFAULT_SUBSCRIPTION_PRODUCT_KEY,
+  ensureSubscriptionProduct,
+  getSubscriptionProductByKey,
+  type SubscriptionProductKey,
+} from "@/lib/products";
 import { prisma } from "@/lib/prisma";
 import { getStripeSubscriptionPriceIssue } from "@/lib/stripe-price";
 import { hasSubscriptionAccess } from "@/lib/subscription-access";
+import {
+  createSubscriptionUpgradeSession,
+  SubscriptionUpgradeError,
+} from "@/lib/subscription-upgrade";
 import { getStripe } from "@/lib/stripe";
 import { syncStripeSubscription } from "@/lib/stripe-sync";
 
@@ -45,15 +54,23 @@ function isStripeSdkError(error: unknown): error is { message: string; type: str
   );
 }
 
-export async function createCheckoutSession() {
+export async function createCheckoutSession(
+  productKey: SubscriptionProductKey = DEFAULT_SUBSCRIPTION_PRODUCT_KEY,
+) {
   if (!getStripeCheckoutConfigStatus().isReady) {
+    redirect("/dashboard?billing=config");
+  }
+
+  const productConfig = getSubscriptionProductByKey(productKey);
+
+  if (!productConfig) {
     redirect("/dashboard?billing=config");
   }
 
   const user = await getSignedInUser();
   const stripe = getStripe();
-  const configuredPriceId = getRequiredEnv("STRIPE_PRICE_ID");
-  const configuredProductId = getRequiredEnv("STRIPE_PRODUCT_ID");
+  const configuredPriceId = getRequiredEnv(productConfig.env.priceId);
+  const configuredProductId = getRequiredEnv(productConfig.env.productId);
   let stripePrice;
 
   try {
@@ -75,7 +92,7 @@ export async function createCheckoutSession() {
     redirect(`/dashboard?billing=${priceIssue}`);
   }
 
-  const product = await ensureBasicProduct();
+  const product = await ensureSubscriptionProduct(productConfig.key);
   const existingSubscription = await prisma.subscription.findFirst({
     orderBy: { updatedAt: "desc" },
     where: {
@@ -128,6 +145,7 @@ export async function createCheckoutSession() {
     client_reference_id: user.uuid,
     line_items: [{ price: configuredPriceId, quantity: 1 }],
     metadata: {
+      action: "subscribe",
       localSubscriptionId: localSubscription.uuid,
       productId: product.uuid,
       userId: user.uuid,
@@ -135,6 +153,7 @@ export async function createCheckoutSession() {
     mode: "subscription",
     subscription_data: {
       metadata: {
+        action: "subscribe",
         localSubscriptionId: localSubscription.uuid,
         productId: product.uuid,
         userId: user.uuid,
@@ -198,4 +217,28 @@ export async function cancelSubscriptionAtPeriodEnd() {
   });
 
   redirect("/dashboard");
+}
+
+export async function createUpgradeSession(targetProductKey: SubscriptionProductKey) {
+  if (!getStripeCheckoutConfigStatus().isReady) {
+    redirect("/dashboard?billing=config");
+  }
+
+  const user = await getSignedInUser();
+  let session;
+
+  try {
+    session = await createSubscriptionUpgradeSession({
+      targetProductKey,
+      userUuid: user.uuid,
+    });
+  } catch (error) {
+    if (error instanceof SubscriptionUpgradeError) {
+      redirect(`/dashboard?upgrade=${error.issue}`);
+    }
+
+    throw error;
+  }
+
+  redirect(session.checkoutUrl ?? "/dashboard?upgrade=pending");
 }

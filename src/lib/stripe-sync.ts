@@ -19,6 +19,7 @@ type RecordStripeEventInput = {
 };
 
 type StripeObjectRef = string | { id: string } | null | undefined;
+type JsonRecord = Record<string, Prisma.JsonValue>;
 
 function stripeObjectId(value: StripeObjectRef) {
   if (!value) {
@@ -26,6 +27,28 @@ function stripeObjectId(value: StripeObjectRef) {
   }
 
   return typeof value === "string" ? value : value.id;
+}
+
+function jsonRecord(value: Prisma.JsonValue): JsonRecord {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {};
+  }
+
+  return value as JsonRecord;
+}
+
+function jsonString(value: Prisma.JsonValue | undefined) {
+  return typeof value === "string" ? value : null;
+}
+
+function mergeLogResult(
+  result: Prisma.JsonValue,
+  patch: Record<string, Prisma.JsonValue>,
+) {
+  return {
+    ...jsonRecord(result),
+    ...patch,
+  };
 }
 
 function unixToDate(value: number | null | undefined) {
@@ -89,6 +112,38 @@ async function findLocalSubscription(
   });
 }
 
+async function findPendingUpgradeLog(subscriptionId: string) {
+  const platform = await prisma.subscriptionPlatform.findUnique({
+    where: {
+      platform_platformSubscriptionId: {
+        platform: "stripe",
+        platformSubscriptionId: subscriptionId,
+      },
+    },
+  });
+
+  if (!platform) {
+    return null;
+  }
+
+  return prisma.subscriptionLog.findFirst({
+    orderBy: { createdAt: "desc" },
+    where: {
+      action: "upgrade",
+      platform: "stripe",
+      status: "pending",
+      subscriptionUuid: platform.subscriptionUuid,
+    },
+  });
+}
+
+function isUpgradeInvoice(invoice: Stripe.Invoice) {
+  return (
+    invoice.metadata?.action === "upgrade" ||
+    invoice.billing_reason === "subscription_update"
+  );
+}
+
 export async function recordStripeEvent({
   event,
   headersJson,
@@ -129,9 +184,9 @@ export async function isStripeEventProcessed(
   source = "stripe",
 ) {
   const event = await prisma.webhookEvent.findUnique({
-      where: {
-        source_eventId: {
-          eventId,
+    where: {
+      source_eventId: {
+        eventId,
         source,
       },
     },
@@ -185,6 +240,33 @@ export async function syncStripeSubscription(
         },
       },
     });
+  }
+
+  if (subscription.status === "canceled") {
+    const failedAt = new Date().toISOString();
+    const pendingLogs = await prisma.subscriptionLog.findMany({
+      where: {
+        action: "upgrade",
+        platform: "stripe",
+        status: "pending",
+        subscriptionUuid: updatedSubscription.uuid,
+      },
+    });
+
+    await Promise.all(
+      pendingLogs.map((log) =>
+        prisma.subscriptionLog.update({
+          data: {
+            result: mergeLogResult(log.result, {
+              failedAt,
+              failureReason: "subscription_deleted",
+            }),
+            status: "failed",
+          },
+          where: { uuid: log.uuid },
+        }),
+      ),
+    );
   }
 
   return updatedSubscription;
@@ -243,6 +325,97 @@ export async function markInvoicePaymentFailed(subscriptionId: string) {
     data: { status: "past_due" },
     where: { uuid: platform.subscription.uuid },
   });
+}
+
+export async function hasPendingUpgradeForStripeSubscription(
+  subscriptionId: string,
+) {
+  return Boolean(await findPendingUpgradeLog(subscriptionId));
+}
+
+export async function completePendingUpgradeForInvoice({
+  invoice,
+  paidAt = new Date(),
+  subscription,
+}: {
+  invoice: Stripe.Invoice;
+  paidAt?: Date;
+  subscription: Stripe.Subscription;
+}) {
+  const subscriptionId = getInvoiceSubscriptionId(invoice);
+
+  if (!subscriptionId || !isUpgradeInvoice(invoice)) {
+    return false;
+  }
+
+  const pendingLog = await findPendingUpgradeLog(subscriptionId);
+
+  const pendingResult = jsonRecord(pendingLog?.result ?? {});
+  const toProductUuid = jsonString(pendingResult.toProductUuid);
+
+  if (!pendingLog || !toProductUuid) {
+    return false;
+  }
+
+  const { currentPeriodEnd, currentPeriodStart } =
+    getSubscriptionPeriod(subscription);
+
+  await prisma.$transaction([
+    prisma.subscription.update({
+      data: {
+        cancelAtPeriodEnd: false,
+        canceledAt: null,
+        currentPeriodEnd,
+        currentPeriodStart,
+        latestPaymentAt: paidAt,
+        productUuid: toProductUuid,
+        status: "active",
+      },
+      where: { uuid: pendingLog.subscriptionUuid },
+    }),
+    prisma.subscriptionLog.update({
+      data: {
+        result: mergeLogResult(pendingLog.result, {
+          completedAt: paidAt.toISOString(),
+          invoiceId: invoice.id,
+          stripeSubscriptionId: subscriptionId,
+        }),
+        status: "completed",
+      },
+      where: { uuid: pendingLog.uuid },
+    }),
+  ]);
+
+  return true;
+}
+
+export async function markPendingUpgradePaymentFailed(invoice: Stripe.Invoice) {
+  const subscriptionId = getInvoiceSubscriptionId(invoice);
+
+  if (!subscriptionId || !isUpgradeInvoice(invoice)) {
+    return false;
+  }
+
+  const pendingLog = await findPendingUpgradeLog(subscriptionId);
+
+  if (!pendingLog) {
+    return false;
+  }
+
+  await prisma.subscriptionLog.update({
+    data: {
+      result: mergeLogResult(pendingLog.result, {
+        failedAt: new Date().toISOString(),
+        failureReason: "payment_failed",
+        invoiceId: invoice.id,
+        stripeSubscriptionId: subscriptionId,
+      }),
+      status: "failed",
+    },
+    where: { uuid: pendingLog.uuid },
+  });
+
+  return true;
 }
 
 export function getInvoiceSubscriptionId(invoice: Stripe.Invoice) {

@@ -35,12 +35,15 @@ STRIPE_SECRET_KEY="sk_test_replace_me"
 STRIPE_WEBHOOK_SECRET="whsec_replace_me"
 STRIPE_PRODUCT_ID="prod_T6BENacglOuI18"
 STRIPE_PRICE_ID="price_1S9ysPRxCAAlii2EbS2iW9PG"
+STRIPE_PRO_PRODUCT_ID="prod_UPfW7TdFgqmI7c"
+STRIPE_PRO_PRICE_ID="price_1TQqAyRxCAAlii2EGGRZGBxT"
 ```
 
 Keep real Stripe secrets only in `.env`. After local verification, rotate any
 test secret or webhook secret that was shared outside Stripe.
 
-For `subscription` mode, `STRIPE_PRICE_ID` must point to a recurring Stripe
+The app offers Basic Plan at $10.00 and Pro Plan at $20.00 USD. For
+`subscription` mode, each configured price ID must point to a recurring Stripe
 price. A one-time price cannot be used to create subscription Checkout
 Sessions.
 

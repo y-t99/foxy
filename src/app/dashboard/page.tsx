@@ -5,6 +5,7 @@ import { signOutAction } from "@/app/actions/auth";
 import {
   cancelSubscriptionAtPeriodEnd,
   createCheckoutSession,
+  createUpgradeSession,
 } from "@/app/actions/billing";
 import {
   dashboardDetailSections,
@@ -18,6 +19,7 @@ import {
 import { ShellHeader } from "@/components/shell-header";
 import { StatusStrip } from "@/components/status-strip";
 import { getStripeCheckoutConfigStatus } from "@/lib/env";
+import { SUBSCRIPTION_PRODUCTS } from "@/lib/products";
 import { prisma } from "@/lib/prisma";
 import { hasSubscriptionAccess } from "@/lib/subscription-access";
 
@@ -30,6 +32,7 @@ type DashboardPageProps = {
   searchParams?: Promise<{
     billing?: string;
     checkout?: string;
+    upgrade?: string;
   }>;
 };
 
@@ -93,6 +96,7 @@ export default async function DashboardPage({
     billing: params?.billing,
     checkout: params?.checkout,
     hasAccess,
+    upgrade: params?.upgrade,
   });
   const stripeCheckoutConfig = getStripeCheckoutConfigStatus();
   const missingStripeConfig = stripeCheckoutConfig.missing.join(", ");
@@ -140,9 +144,22 @@ export default async function DashboardPage({
       ...item,
       value: subscription?.product
         ? `${subscription.product.name} · ${subscription.product.price}`
-        : "Basic Plan not started",
+        : "No plan started",
     };
   });
+  const currentProductConfig = subscription?.product
+    ? SUBSCRIPTION_PRODUCTS.find(
+        (product) => product.name === subscription.product.name,
+      )
+    : null;
+  const currentProductLevel =
+    currentProductConfig?.level ?? subscription?.product.level ?? 0;
+  const upgradeProducts =
+    hasAccess && subscription
+      ? SUBSCRIPTION_PRODUCTS.filter(
+          (product) => product.level > currentProductLevel,
+        )
+      : [];
   const generationFlow: DashboardFlowItem[] = hasAccess
     ? [
         {
@@ -259,35 +276,82 @@ export default async function DashboardPage({
               </p>
 
               {hasAccess ? (
-                subscription?.cancelAtPeriodEnd ? (
-                  <p className="mt-8 rounded-[var(--radius-md)] border border-[var(--color-note-border)] bg-[var(--color-note-bg)] px-4 py-3 text-sm leading-7 text-[var(--color-note-foreground)]">
-                    Cancellation is scheduled. Access remains active until{" "}
-                    {formatDate(subscription.currentPeriodEnd ?? null)}.
-                  </p>
-                ) : subscription?.platform && stripeCheckoutConfig.isReady ? (
-                  <form action={cancelSubscriptionAtPeriodEnd} className="mt-8">
-                    <button
-                      className="rounded-full border border-[var(--color-line)] bg-[var(--color-surface)] px-5 py-3 text-sm font-medium text-[var(--color-foreground)] transition hover:border-[var(--color-line-strong)] hover:bg-[var(--color-surface-muted)] active:scale-[0.99]"
-                      type="submit"
-                    >
-                      Cancel at period end
-                    </button>
-                  </form>
-                ) : subscription?.platform ? (
-                  <p className="mt-8 rounded-[var(--radius-md)] border border-[var(--color-note-border)] bg-[var(--color-note-bg)] px-4 py-3 text-sm leading-7 text-[var(--color-note-foreground)]">
-                    Billing actions stay disabled until local Stripe config is
-                    updated in `.env`.
-                  </p>
-                ) : null
+                <div className="mt-8 grid gap-3">
+                  {subscription?.cancelAtPeriodEnd ? (
+                    <p className="rounded-[var(--radius-md)] border border-[var(--color-note-border)] bg-[var(--color-note-bg)] px-4 py-3 text-sm leading-7 text-[var(--color-note-foreground)]">
+                      Cancellation is scheduled. Access remains active until{" "}
+                      {formatDate(subscription.currentPeriodEnd ?? null)}.
+                    </p>
+                  ) : null}
+
+                  {upgradeProducts.length > 0 && stripeCheckoutConfig.isReady
+                    ? upgradeProducts.map((product) => {
+                        const upgradeAction = createUpgradeSession.bind(
+                          null,
+                          product.key,
+                        );
+
+                        return (
+                          <form action={upgradeAction} key={product.key}>
+                            <button
+                              className="flex min-h-20 w-full flex-col items-start justify-between rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-4 text-left transition hover:border-[var(--color-line-strong)] hover:bg-[var(--color-surface-muted)] active:scale-[0.99]"
+                              type="submit"
+                            >
+                              <span className="text-sm font-semibold text-[var(--color-foreground)]">
+                                Upgrade to {product.name}
+                              </span>
+                              <span className="text-sm text-[var(--color-muted)]">
+                                {product.price}
+                              </span>
+                            </button>
+                          </form>
+                        );
+                      })
+                    : null}
+
+                  {!subscription?.cancelAtPeriodEnd &&
+                  subscription?.platform &&
+                  stripeCheckoutConfig.isReady ? (
+                    <form action={cancelSubscriptionAtPeriodEnd}>
+                      <button
+                        className="rounded-full border border-[var(--color-line)] bg-[var(--color-surface)] px-5 py-3 text-sm font-medium text-[var(--color-foreground)] transition hover:border-[var(--color-line-strong)] hover:bg-[var(--color-surface-muted)] active:scale-[0.99]"
+                        type="submit"
+                      >
+                        Cancel at period end
+                      </button>
+                    </form>
+                  ) : subscription?.platform && !stripeCheckoutConfig.isReady ? (
+                    <p className="rounded-[var(--radius-md)] border border-[var(--color-note-border)] bg-[var(--color-note-bg)] px-4 py-3 text-sm leading-7 text-[var(--color-note-foreground)]">
+                      Billing actions stay disabled until local Stripe config is
+                      updated in `.env`.
+                    </p>
+                  ) : null}
+                </div>
               ) : stripeCheckoutConfig.isReady ? (
-                <form action={createCheckoutSession} className="mt-8">
-                  <button
-                    className="rounded-full bg-[var(--color-foreground)] px-5 py-3 text-sm font-medium text-[var(--color-surface)] transition hover:opacity-92 active:scale-[0.99]"
-                    type="submit"
-                  >
-                    Unlock the workspace
-                  </button>
-                </form>
+                <div className="mt-8 grid gap-3 sm:grid-cols-2">
+                  {SUBSCRIPTION_PRODUCTS.map((product) => {
+                    const checkoutAction = createCheckoutSession.bind(
+                      null,
+                      product.key,
+                    );
+
+                    return (
+                      <form action={checkoutAction} key={product.key}>
+                        <button
+                          className="flex min-h-24 w-full flex-col items-start justify-between rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-4 text-left transition hover:border-[var(--color-line-strong)] hover:bg-[var(--color-surface-muted)] active:scale-[0.99]"
+                          type="submit"
+                        >
+                          <span className="text-sm font-semibold text-[var(--color-foreground)]">
+                            {product.name}
+                          </span>
+                          <span className="text-sm text-[var(--color-muted)]">
+                            {product.price}
+                          </span>
+                        </button>
+                      </form>
+                    );
+                  })}
+                </div>
               ) : (
                 <div className="mt-8 grid gap-3">
                   <p className="rounded-[var(--radius-md)] border border-[var(--color-note-border)] bg-[var(--color-note-bg)] px-4 py-3 text-sm leading-7 text-[var(--color-note-foreground)]">

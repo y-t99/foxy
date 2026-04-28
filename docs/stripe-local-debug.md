@@ -12,8 +12,11 @@ Before starting local debugging, make sure all of the following are true:
 - `STRIPE_SECRET_KEY` is a real test secret key, not a placeholder value.
 - `STRIPE_PRODUCT_ID` points to the same Stripe product used by
   `STRIPE_PRICE_ID`.
+- `STRIPE_PRO_PRODUCT_ID` points to the same Stripe product used by
+  `STRIPE_PRO_PRICE_ID`.
 - `STRIPE_PRICE_ID` is a **recurring** price. One-time prices will be rejected
   by the app.
+- `STRIPE_PRO_PRICE_ID` is also a **recurring** price.
 - The app is running locally at `http://localhost:3000` unless you intentionally
   changed the port.
 - Prisma migrations have been applied to the local SQLite database.
@@ -52,13 +55,16 @@ STRIPE_SECRET_KEY="sk_test_..."
 STRIPE_WEBHOOK_SECRET="whsec_..."
 STRIPE_PRODUCT_ID="prod_..."
 STRIPE_PRICE_ID="price_..."
+STRIPE_PRO_PRODUCT_ID="prod_..."
+STRIPE_PRO_PRICE_ID="price_..."
 ```
 
 Notes:
 
 - `AUTH_URL` and `NEXT_PUBLIC_APP_URL` should match your local app origin.
-- `STRIPE_SECRET_KEY`, `STRIPE_PRODUCT_ID`, and `STRIPE_PRICE_ID` are required
-  for checkout to become available.
+- `STRIPE_SECRET_KEY`, `STRIPE_PRODUCT_ID`, `STRIPE_PRICE_ID`,
+  `STRIPE_PRO_PRODUCT_ID`, and `STRIPE_PRO_PRICE_ID` are required for checkout
+  to become available.
 - Placeholder fragments such as `replace_me`, `replace-with`, or `change-me`
   are treated as missing config by the app.
 - `STRIPE_WEBHOOK_SECRET` is required for webhook signature verification.
@@ -73,13 +79,14 @@ openssl rand -base64 32
 
 Create or confirm the following resources in Stripe test mode:
 
-1. A product that represents the subscription sold by this app.
-2. A recurring price under that same product.
+1. Products that represent the Basic and Pro subscriptions sold by this app.
+2. A recurring price under each product.
 3. A test API key pair.
 
 Important constraints enforced by the code:
 
 - `STRIPE_PRICE_ID` must belong to `STRIPE_PRODUCT_ID`.
+- `STRIPE_PRO_PRICE_ID` must belong to `STRIPE_PRO_PRODUCT_ID`.
 - The price must include `recurring`; one-time prices do not work with this
   checkout flow.
 - The checkout session is created in `subscription` mode, so only subscription
@@ -226,6 +233,8 @@ Check:
 - `STRIPE_SECRET_KEY`
 - `STRIPE_PRODUCT_ID`
 - `STRIPE_PRICE_ID`
+- `STRIPE_PRO_PRODUCT_ID`
+- `STRIPE_PRO_PRICE_ID`
 - whether any of them still contains placeholder text
 
 ### Checkout redirects back with Stripe API error
@@ -236,7 +245,7 @@ Symptoms:
 
 Check:
 
-- the secret key belongs to the same Stripe account as the product and price
+- the secret key belongs to the same Stripe account as the products and prices
 - the price exists in test mode
 - the configured price is accessible by the current API key
 
@@ -264,6 +273,7 @@ Check:
 
 - the configured price is recurring
 - the configured price belongs to `STRIPE_PRODUCT_ID`
+- the configured Pro price belongs to `STRIPE_PRO_PRODUCT_ID`
 
 ## 9. Minimum Success Criteria
 

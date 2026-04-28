@@ -34,4 +34,16 @@ describe("dashboard checkout notice", () => {
       }),
     ).toBe(true);
   });
+
+  it("shows a pending upgrade notice without changing access assumptions", () => {
+    expect(
+      getDashboardNotice({
+        hasAccess: true,
+        upgrade: "pending",
+      }),
+    ).toEqual({
+      text: "Upgrade confirmation is pending. Your current plan stays active until Stripe confirms the upgrade payment.",
+      tone: "success",
+    });
+  });
 });

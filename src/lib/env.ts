@@ -27,6 +27,8 @@ export function getStripeCheckoutConfigStatus() {
     "STRIPE_SECRET_KEY",
     "STRIPE_PRODUCT_ID",
     "STRIPE_PRICE_ID",
+    "STRIPE_PRO_PRODUCT_ID",
+    "STRIPE_PRO_PRICE_ID",
   ] as const;
   const missing = requiredVariables.filter((name) => {
     const value = process.env[name];

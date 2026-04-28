@@ -3,10 +3,13 @@ import type Stripe from "stripe";
 import { getRequiredEnv } from "@/lib/env";
 import { getStripe } from "@/lib/stripe";
 import {
+  completePendingUpgradeForInvoice,
   getInvoiceSubscriptionId,
+  hasPendingUpgradeForStripeSubscription,
   isStripeEventProcessed,
   markCheckoutSessionExpired,
   markInvoicePaymentFailed,
+  markPendingUpgradePaymentFailed,
   recordStripeEvent,
   syncStripeSubscription,
 } from "@/lib/stripe-sync";
@@ -71,19 +74,42 @@ export async function POST(req: Request) {
       break;
     }
     case "customer.subscription.created":
-    case "customer.subscription.updated":
     case "customer.subscription.deleted": {
       await syncStripeSubscription(event.data.object as Stripe.Subscription);
       break;
     }
+    case "customer.subscription.updated": {
+      const subscription = event.data.object as Stripe.Subscription;
+
+      if (!(await hasPendingUpgradeForStripeSubscription(subscription.id))) {
+        await syncStripeSubscription(subscription);
+      }
+
+      break;
+    }
+    case "invoice.paid":
     case "invoice.payment_succeeded": {
       const invoice = event.data.object as Stripe.Invoice;
       const subscriptionId = getInvoiceSubscriptionId(invoice);
 
       if (subscriptionId) {
-        await syncStripeSubscription(await retrieveSubscription(subscriptionId), {
-          paidAt: new Date(),
+        const subscription = await retrieveSubscription(subscriptionId);
+        const paidAt = new Date();
+        const completedUpgrade = await completePendingUpgradeForInvoice({
+          invoice,
+          paidAt,
+          subscription,
         });
+
+        if (!completedUpgrade) {
+          await syncStripeSubscription(subscription, {
+            paidAt,
+          });
+        } else if (subscription.cancel_at_period_end) {
+          await getStripe().subscriptions.update(subscriptionId, {
+            cancel_at_period_end: false,
+          });
+        }
       }
 
       break;
@@ -93,9 +119,13 @@ export async function POST(req: Request) {
       const subscriptionId = getInvoiceSubscriptionId(invoice);
 
       if (subscriptionId) {
-        const subscription = await retrieveSubscription(subscriptionId);
-        await syncStripeSubscription(subscription);
-        await markInvoicePaymentFailed(subscriptionId);
+        const failedUpgrade = await markPendingUpgradePaymentFailed(invoice);
+
+        if (!failedUpgrade) {
+          const subscription = await retrieveSubscription(subscriptionId);
+          await syncStripeSubscription(subscription);
+          await markInvoicePaymentFailed(subscriptionId);
+        }
       }
 
       break;

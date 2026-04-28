@@ -30,6 +30,7 @@ model Product {
   updatedAt     DateTime          @updatedAt @map("updated_at")
   createdBy     String?           @map("created_by")
   updatedBy     String?           @map("updated_by")
+  level         Int               @default(0)
   name          String
   price         String
   platforms     ProductPlatform[]
@@ -98,6 +99,26 @@ model SubscriptionPlatform {
   @@index([platform, platformCustomerId])
   @@unique([platform, platformSubscriptionId])
   @@map("subscription_platforms")
+}
+
+model SubscriptionLog {
+  id                        Int      @id @default(autoincrement())
+  uuid                      String   @unique @default(cuid())
+  createdAt                 DateTime @default(now()) @map("created_at")
+  updatedAt                 DateTime @updatedAt @map("updated_at")
+  createdBy                 String?  @map("created_by")
+  updatedBy                 String?  @map("updated_by")
+  subscriptionUuid          String   @map("subscription_uuid")
+  userUuid                  String   @map("user_uuid")
+  action                    String
+  status                    String
+  platform                  String
+  result                    Json
+
+  @@index([subscriptionUuid])
+  @@index([userUuid])
+  @@index([action, status, platform])
+  @@map("subscription_logs")
 }
 
 model WebhookEvent {

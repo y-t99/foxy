@@ -12,6 +12,8 @@ describe("getStripeCheckoutConfigStatus", () => {
     process.env = {
       ...originalEnv,
       STRIPE_PRICE_ID: "price_123",
+      STRIPE_PRO_PRICE_ID: "price_pro_123",
+      STRIPE_PRO_PRODUCT_ID: "prod_pro_123",
       STRIPE_PRODUCT_ID: "prod_123",
       STRIPE_SECRET_KEY: "sk_test_replace_me",
     };
@@ -26,6 +28,8 @@ describe("getStripeCheckoutConfigStatus", () => {
     process.env = {
       ...originalEnv,
       STRIPE_PRICE_ID: "price_123",
+      STRIPE_PRO_PRICE_ID: "price_pro_123",
+      STRIPE_PRO_PRODUCT_ID: "prod_pro_123",
       STRIPE_PRODUCT_ID: "prod_123",
       STRIPE_SECRET_KEY: "sk_test_1234567890",
     };
@@ -33,6 +37,20 @@ describe("getStripeCheckoutConfigStatus", () => {
     expect(getStripeCheckoutConfigStatus()).toEqual({
       isReady: true,
       missing: [],
+    });
+  });
+
+  it("requires the Pro Plan Stripe ids for checkout readiness", () => {
+    process.env = {
+      ...originalEnv,
+      STRIPE_PRICE_ID: "price_123",
+      STRIPE_PRODUCT_ID: "prod_123",
+      STRIPE_SECRET_KEY: "sk_test_1234567890",
+    };
+
+    expect(getStripeCheckoutConfigStatus()).toEqual({
+      isReady: false,
+      missing: ["STRIPE_PRO_PRODUCT_ID", "STRIPE_PRO_PRICE_ID"],
     });
   });
 });
