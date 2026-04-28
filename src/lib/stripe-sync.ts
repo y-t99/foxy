@@ -39,10 +39,6 @@ function jsonRecord(value: Prisma.JsonValue): JsonRecord {
   return value as JsonRecord;
 }
 
-function jsonString(value: Prisma.JsonValue | undefined) {
-  return typeof value === "string" ? value : null;
-}
-
 function metadataString(
   metadata: Stripe.Metadata | null | undefined,
   key: string,
@@ -174,11 +170,23 @@ async function findPendingUpgradeLogByMetadata(
   });
 }
 
+type UpgradeInvoiceMetadata = UpgradeCheckoutSessionMetadata;
+
+export function getUpgradeInvoiceMetadata({
+  metadata,
+}: Pick<Stripe.Invoice, "metadata">): UpgradeInvoiceMetadata | null {
+  return getUpgradeMetadata(metadata);
+}
+
 function isUpgradeInvoice(invoice: Stripe.Invoice) {
-  return (
-    invoice.metadata?.action === "upgrade" ||
-    invoice.billing_reason === "subscription_update"
-  );
+  return getUpgradeInvoiceMetadata(invoice) !== null;
+}
+
+export function getPendingUpgradeFailureStatus({
+  auto_advance,
+  next_payment_attempt,
+}: Pick<Stripe.Invoice, "auto_advance" | "next_payment_attempt">) {
+  return auto_advance && next_payment_attempt ? "pending" : "failed";
 }
 
 export async function recordStripeEvent({
@@ -352,9 +360,9 @@ type UpgradeCheckoutSessionMetadata = {
   toProductUuid: string;
 };
 
-export function getUpgradeCheckoutSessionMetadata({
-  metadata,
-}: Pick<Stripe.Checkout.Session, "metadata">): UpgradeCheckoutSessionMetadata | null {
+function getUpgradeMetadata(
+  metadata: Stripe.Metadata | null | undefined,
+): UpgradeCheckoutSessionMetadata | null {
   if (metadataString(metadata, "action") !== "upgrade") {
     return null;
   }
@@ -394,6 +402,12 @@ export function getUpgradeCheckoutSessionMetadata({
     targetPlatformPriceId,
     toProductUuid,
   };
+}
+
+export function getUpgradeCheckoutSessionMetadata({
+  metadata,
+}: Pick<Stripe.Checkout.Session, "metadata">): UpgradeCheckoutSessionMetadata | null {
+  return getUpgradeMetadata(metadata);
 }
 
 export async function markUpgradeCheckoutSessionExpired(
@@ -543,29 +557,59 @@ export async function hasPendingUpgradeForStripeSubscription(
 export async function completePendingUpgradeForInvoice({
   invoice,
   paidAt = new Date(),
-  subscription,
 }: {
   invoice: Stripe.Invoice;
   paidAt?: Date;
-  subscription: Stripe.Subscription;
 }) {
-  const subscriptionId = getInvoiceSubscriptionId(invoice);
+  const metadata = getUpgradeInvoiceMetadata(invoice);
+  const subscriptionId =
+    metadata?.stripeSubscriptionId ?? getInvoiceSubscriptionId(invoice);
 
-  if (!subscriptionId || !isUpgradeInvoice(invoice)) {
+  if (!subscriptionId || !metadata || !isUpgradeInvoice(invoice)) {
     return false;
   }
 
-  const pendingLog = await findPendingUpgradeLog(subscriptionId);
+  const pendingLog =
+    (await findPendingUpgradeLogByMetadata(metadata)) ??
+    (await findPendingUpgradeLog(subscriptionId));
 
-  const pendingResult = jsonRecord(pendingLog?.result ?? {});
-  const toProductUuid = jsonString(pendingResult.toProductUuid);
-
-  if (!pendingLog || !toProductUuid) {
+  if (!pendingLog) {
     return false;
+  }
+
+  let updatedStripeSubscription: Stripe.Subscription;
+
+  try {
+    updatedStripeSubscription = await getStripe().subscriptions.update(
+      metadata.stripeSubscriptionId,
+      buildSubscriptionUpgradeUpdateParams({
+        itemId: metadata.stripeSubscriptionItemId,
+        targetPlatformPriceId: metadata.targetPlatformPriceId,
+      }),
+    );
+  } catch (error) {
+    await prisma.subscriptionLog.update({
+      data: {
+        result: mergeLogResult(pendingLog.result, {
+          failedAt: new Date().toISOString(),
+          failureReason: "subscription_update_failed",
+          invoiceId: invoice.id,
+          stripeSubscriptionId: metadata.stripeSubscriptionId,
+        }),
+        status: "upgrade_failed",
+      },
+      where: { uuid: pendingLog.uuid },
+    });
+
+    if (isStripeSdkError(error)) {
+      return true;
+    }
+
+    throw error;
   }
 
   const { currentPeriodEnd, currentPeriodStart } =
-    getSubscriptionPeriod(subscription);
+    getSubscriptionPeriod(updatedStripeSubscription);
 
   await prisma.$transaction([
     prisma.subscription.update({
@@ -575,7 +619,7 @@ export async function completePendingUpgradeForInvoice({
         currentPeriodEnd,
         currentPeriodStart,
         latestPaymentAt: paidAt,
-        productUuid: toProductUuid,
+        productUuid: metadata.toProductUuid,
         status: "active",
       },
       where: { uuid: pendingLog.subscriptionUuid },
@@ -585,7 +629,7 @@ export async function completePendingUpgradeForInvoice({
         result: mergeLogResult(pendingLog.result, {
           completedAt: paidAt.toISOString(),
           invoiceId: invoice.id,
-          stripeSubscriptionId: subscriptionId,
+          stripeSubscriptionId: metadata.stripeSubscriptionId,
         }),
         status: "completed",
       },
@@ -597,29 +641,142 @@ export async function completePendingUpgradeForInvoice({
 }
 
 export async function markPendingUpgradePaymentFailed(invoice: Stripe.Invoice) {
-  const subscriptionId = getInvoiceSubscriptionId(invoice);
+  const metadata = getUpgradeInvoiceMetadata(invoice);
+  const subscriptionId =
+    metadata?.stripeSubscriptionId ?? getInvoiceSubscriptionId(invoice);
 
   if (!subscriptionId || !isUpgradeInvoice(invoice)) {
     return false;
   }
 
-  const pendingLog = await findPendingUpgradeLog(subscriptionId);
+  const pendingLog =
+    metadata != null
+      ? ((await findPendingUpgradeLogByMetadata(metadata)) ??
+        (await findPendingUpgradeLog(subscriptionId)))
+      : await findPendingUpgradeLog(subscriptionId);
 
   if (!pendingLog) {
     return false;
   }
 
+  const nextPaymentAttempt = invoice.next_payment_attempt;
+  const status = getPendingUpgradeFailureStatus({
+    auto_advance: invoice.auto_advance,
+    next_payment_attempt: nextPaymentAttempt,
+  });
+
   await prisma.subscriptionLog.update({
     data: {
       result: mergeLogResult(pendingLog.result, {
         failedAt: new Date().toISOString(),
-        failureReason: "payment_failed",
+        failureReason:
+          status === "pending" ? "payment_failed_retrying" : "payment_failed",
         invoiceId: invoice.id,
+        nextPaymentAttempt:
+          nextPaymentAttempt != null
+            ? new Date(nextPaymentAttempt * 1000).toISOString()
+            : null,
         stripeSubscriptionId: subscriptionId,
+      }),
+      status,
+    },
+    where: { uuid: pendingLog.uuid },
+  });
+
+  return true;
+}
+
+async function findPendingUpgradeLogForInvoice(invoice: Stripe.Invoice) {
+  const metadata = getUpgradeInvoiceMetadata(invoice);
+
+  if (metadata) {
+    const pendingLog = await findPendingUpgradeLogByMetadata(metadata);
+
+    if (pendingLog) {
+      return {
+        pendingLog,
+        subscriptionId: metadata.stripeSubscriptionId,
+      };
+    }
+  }
+
+  const subscriptionId =
+    metadata?.stripeSubscriptionId ?? getInvoiceSubscriptionId(invoice);
+
+  if (!subscriptionId) {
+    return null;
+  }
+
+  const pendingLog = await findPendingUpgradeLog(subscriptionId);
+
+  return pendingLog ? { pendingLog, subscriptionId } : null;
+}
+
+export async function markPendingUpgradeInvoiceOpen(invoice: Stripe.Invoice) {
+  const pending = await findPendingUpgradeLogForInvoice(invoice);
+
+  if (!pending) {
+    return false;
+  }
+
+  await prisma.subscriptionLog.update({
+    data: {
+      result: mergeLogResult(pending.pendingLog.result, {
+        invoiceId: invoice.id,
+        openedAt: new Date().toISOString(),
+        stripeSubscriptionId: pending.subscriptionId,
+      }),
+      status: "pending",
+    },
+    where: { uuid: pending.pendingLog.uuid },
+  });
+
+  return true;
+}
+
+export async function markPendingUpgradeInvoiceVoided(invoice: Stripe.Invoice) {
+  const pending = await findPendingUpgradeLogForInvoice(invoice);
+
+  if (!pending) {
+    return false;
+  }
+
+  await prisma.subscriptionLog.update({
+    data: {
+      result: mergeLogResult(pending.pendingLog.result, {
+        failedAt: new Date().toISOString(),
+        failureReason: "invoice_voided",
+        invoiceId: invoice.id,
+        stripeSubscriptionId: pending.subscriptionId,
       }),
       status: "failed",
     },
-    where: { uuid: pendingLog.uuid },
+    where: { uuid: pending.pendingLog.uuid },
+  });
+
+  return true;
+}
+
+export async function markPendingUpgradeInvoiceUncollectible(
+  invoice: Stripe.Invoice,
+) {
+  const pending = await findPendingUpgradeLogForInvoice(invoice);
+
+  if (!pending) {
+    return false;
+  }
+
+  await prisma.subscriptionLog.update({
+    data: {
+      result: mergeLogResult(pending.pendingLog.result, {
+        failedAt: new Date().toISOString(),
+        failureReason: "invoice_uncollectible",
+        invoiceId: invoice.id,
+        stripeSubscriptionId: pending.subscriptionId,
+      }),
+      status: "failed",
+    },
+    where: { uuid: pending.pendingLog.uuid },
   });
 
   return true;

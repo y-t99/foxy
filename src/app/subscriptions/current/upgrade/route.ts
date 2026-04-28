@@ -42,6 +42,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       checkout_url: upgrade.checkoutUrl,
+      invoice_id: upgrade.invoiceId,
       subscription_change_uuid: upgrade.subscriptionChangeUuid,
     });
   } catch (error) {

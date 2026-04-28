@@ -1,5 +1,5 @@
 import type Stripe from "stripe";
-import { getAppUrl, getRequiredEnv } from "@/lib/env";
+import { getRequiredEnv } from "@/lib/env";
 import {
   ensureSubscriptionProduct,
   getSubscriptionProductByKey,
@@ -30,6 +30,18 @@ type CreateSubscriptionUpgradeSessionInput = {
   userUuid: string;
 };
 
+type SubscriptionUpgradeMetadataInput = {
+  currentProductUuid: string;
+  localSubscriptionUuid: string;
+  stripeSubscriptionId: string;
+  stripeSubscriptionItemId: string;
+  subscriptionChangeUuid: string;
+  targetPlatformPriceId: string;
+  targetPlatformProductId: string;
+  targetProductUuid: string;
+  userUuid: string;
+};
+
 export class SubscriptionUpgradeError extends Error {
   constructor(public readonly issue: SubscriptionUpgradeIssue | "stripe_api") {
     super(issue);
@@ -57,9 +69,34 @@ export function buildSubscriptionUpgradeUpdateParams({
   };
 }
 
-export function buildSubscriptionUpgradeCheckoutParams({
+function buildSubscriptionUpgradeMetadata({
+  currentProductUuid,
+  localSubscriptionUuid,
+  stripeSubscriptionId,
+  stripeSubscriptionItemId,
+  subscriptionChangeUuid,
+  targetPlatformPriceId,
+  targetPlatformProductId,
+  targetProductUuid,
+  userUuid,
+}: SubscriptionUpgradeMetadataInput) {
+  return {
+    action: "upgrade",
+    fromProductUuid: currentProductUuid,
+    localSubscriptionId: localSubscriptionUuid,
+    stripeSubscriptionId,
+    stripeSubscriptionItemId,
+    subscriptionChangeUuid,
+    targetPlatformPriceId,
+    targetPlatformProductId,
+    toProductUuid: targetProductUuid,
+    userId: userUuid,
+  };
+}
+
+export function buildSubscriptionUpgradeInvoiceItemParams({
   amount,
-  appUrl,
+  customerId,
   currency,
   currentProductUuid,
   localSubscriptionUuid,
@@ -73,7 +110,7 @@ export function buildSubscriptionUpgradeCheckoutParams({
   userUuid,
 }: {
   amount: number;
-  appUrl: string;
+  customerId: string;
   currency: string;
   currentProductUuid: string;
   localSubscriptionUuid: string;
@@ -85,36 +122,78 @@ export function buildSubscriptionUpgradeCheckoutParams({
   targetProductName: string;
   targetProductUuid: string;
   userUuid: string;
-}): Stripe.Checkout.SessionCreateParams {
+}): Stripe.InvoiceItemCreateParams {
   return {
-    cancel_url: `${appUrl}/dashboard?upgrade=cancelled`,
-    client_reference_id: userUuid,
-    line_items: [
-      {
-        price_data: {
-          currency,
-          product_data: {
-            name: `${targetProductName} upgrade difference`,
-          },
-          unit_amount: amount,
-        },
-        quantity: 1,
-      },
-    ],
-    metadata: {
-      action: "upgrade",
-      fromProductUuid: currentProductUuid,
-      localSubscriptionId: localSubscriptionUuid,
+    amount,
+    currency,
+    customer: customerId,
+    description: `${targetProductName} upgrade difference`,
+    metadata: buildSubscriptionUpgradeMetadata({
+      currentProductUuid,
+      localSubscriptionUuid,
       stripeSubscriptionId,
       stripeSubscriptionItemId,
       subscriptionChangeUuid,
       targetPlatformPriceId,
       targetPlatformProductId,
-      toProductUuid: targetProductUuid,
-      userId: userUuid,
-    },
-    mode: "payment",
-    success_url: `${appUrl}/dashboard?upgrade=pending`,
+      targetProductUuid,
+      userUuid,
+    }),
+    subscription: stripeSubscriptionId,
+  };
+}
+
+export function buildSubscriptionUpgradeInvoiceParams({
+  customerId,
+  currentProductUuid,
+  localSubscriptionUuid,
+  stripeSubscriptionId,
+  stripeSubscriptionItemId,
+  subscriptionChangeUuid,
+  targetPlatformPriceId,
+  targetPlatformProductId,
+  targetProductUuid,
+  userUuid,
+}: {
+  customerId: string;
+  currentProductUuid: string;
+  localSubscriptionUuid: string;
+  stripeSubscriptionId: string;
+  stripeSubscriptionItemId: string;
+  subscriptionChangeUuid: string;
+  targetPlatformPriceId: string;
+  targetPlatformProductId: string;
+  targetProductUuid: string;
+  userUuid: string;
+}): Stripe.InvoiceCreateParams {
+  return {
+    auto_advance: true,
+    collection_method: "charge_automatically",
+    customer: customerId,
+    metadata: buildSubscriptionUpgradeMetadata({
+      currentProductUuid,
+      localSubscriptionUuid,
+      stripeSubscriptionId,
+      stripeSubscriptionItemId,
+      subscriptionChangeUuid,
+      targetPlatformPriceId,
+      targetPlatformProductId,
+      targetProductUuid,
+      userUuid,
+    }),
+    subscription: stripeSubscriptionId,
+  };
+}
+
+export function buildSubscriptionUpgradeFinalizeInvoiceParams(): Stripe.InvoiceFinalizeInvoiceParams {
+  return {
+    auto_advance: true,
+  };
+}
+
+export function buildSubscriptionUpgradePayInvoiceParams(): Stripe.InvoicePayParams {
+  return {
+    off_session: true,
   };
 }
 
@@ -308,6 +387,10 @@ export async function createSubscriptionUpgradeSession({
     throw new SubscriptionUpgradeError("subscription_missing");
   }
 
+  if (!subscription.platform.platformCustomerId) {
+    throw new SubscriptionUpgradeError("subscription_missing");
+  }
+
   const targetStripePrice = await validateStripePrice({
     platformPriceId: targetPlatformPriceId,
     platformProductId: targetPlatformProductId,
@@ -367,10 +450,11 @@ export async function createSubscriptionUpgradeSession({
     },
   });
 
-  let checkoutSession: Stripe.Checkout.Session;
-  const checkoutParams = buildSubscriptionUpgradeCheckoutParams({
+  let invoiceItem: Stripe.InvoiceItem | null = null;
+  let invoice: Stripe.Invoice | null = null;
+  const invoiceItemParams = buildSubscriptionUpgradeInvoiceItemParams({
     amount: difference.amount,
-    appUrl: getAppUrl(),
+    customerId: subscription.platform.platformCustomerId,
     currency: difference.currency,
     currentProductUuid: subscription.productUuid,
     localSubscriptionUuid: subscription.uuid,
@@ -383,14 +467,41 @@ export async function createSubscriptionUpgradeSession({
     targetProductUuid: target.product.uuid,
     userUuid,
   });
-
-  if (subscription.platform.platformCustomerId) {
-    checkoutParams.customer = subscription.platform.platformCustomerId;
-  }
+  const invoiceParams = buildSubscriptionUpgradeInvoiceParams({
+    customerId: subscription.platform.platformCustomerId,
+    currentProductUuid: subscription.productUuid,
+    localSubscriptionUuid: subscription.uuid,
+    stripeSubscriptionId: stripeSubscription.id,
+    stripeSubscriptionItemId: itemId,
+    subscriptionChangeUuid: subscriptionLog.uuid,
+    targetPlatformPriceId,
+    targetPlatformProductId,
+    targetProductUuid: target.product.uuid,
+    userUuid,
+  });
 
   try {
-    checkoutSession = await getStripe().checkout.sessions.create(checkoutParams);
+    invoiceItem = await getStripe().invoiceItems.create(invoiceItemParams);
+    invoice = await getStripe().invoices.create(invoiceParams);
+    invoice = await getStripe().invoices.finalizeInvoice(
+      invoice.id,
+      buildSubscriptionUpgradeFinalizeInvoiceParams(),
+    );
+    invoice = await getStripe().invoices.pay(
+      invoice.id,
+      buildSubscriptionUpgradePayInvoiceParams(),
+    );
   } catch (error) {
+    if (invoice?.id) {
+      await getStripe()
+        .invoices.update(invoice.id, { auto_advance: false })
+        .catch(() => null);
+    }
+
+    if (invoiceItem?.id) {
+      await getStripe().invoiceItems.del(invoiceItem.id).catch(() => null);
+    }
+
     await prisma.subscriptionLog.update({
       data: {
         result: {
@@ -399,6 +510,7 @@ export async function createSubscriptionUpgradeSession({
           failedAt: new Date().toISOString(),
           failureReason: "stripe_api",
           fromProductUuid: subscription.productUuid,
+          invoiceId: invoice?.id,
           stripeSubscriptionId: stripeSubscription.id,
           stripeSubscriptionItemId: itemId,
           targetPlatformPriceId,
@@ -417,13 +529,22 @@ export async function createSubscriptionUpgradeSession({
     throw error;
   }
 
+  if (!invoiceItem) {
+    throw new SubscriptionUpgradeError("stripe_api");
+  }
+
+  if (!invoice) {
+    throw new SubscriptionUpgradeError("stripe_api");
+  }
+
   await prisma.subscriptionLog.update({
     data: {
       result: {
-        checkoutSessionId: checkoutSession.id,
         differenceAmount: difference.amount,
         differenceCurrency: difference.currency,
         fromProductUuid: subscription.productUuid,
+        invoiceId: invoice.id,
+        invoiceItemId: invoiceItem.id,
         stripeSubscriptionId: stripeSubscription.id,
         stripeSubscriptionItemId: itemId,
         targetPlatformPriceId,
@@ -435,7 +556,8 @@ export async function createSubscriptionUpgradeSession({
   });
 
   return {
-    checkoutUrl: checkoutSession.url ?? null,
+    checkoutUrl: null,
+    invoiceId: invoice.id,
     subscriptionChangeUuid: subscriptionLog.uuid,
   };
 }

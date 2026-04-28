@@ -225,10 +225,10 @@ export async function createUpgradeSession(targetProductKey: SubscriptionProduct
   }
 
   const user = await getSignedInUser();
-  let session;
+  let upgrade;
 
   try {
-    session = await createSubscriptionUpgradeSession({
+    upgrade = await createSubscriptionUpgradeSession({
       targetProductKey,
       userUuid: user.uuid,
     });
@@ -240,5 +240,5 @@ export async function createUpgradeSession(targetProductKey: SubscriptionProduct
     throw error;
   }
 
-  redirect(session.checkoutUrl ?? "/dashboard?upgrade=pending");
+  redirect(upgrade.checkoutUrl ?? "/dashboard?upgrade=pending");
 }

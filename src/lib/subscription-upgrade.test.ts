@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildSubscriptionUpgradeCheckoutParams,
+  buildSubscriptionUpgradeFinalizeInvoiceParams,
+  buildSubscriptionUpgradeInvoiceItemParams,
+  buildSubscriptionUpgradeInvoiceParams,
+  buildSubscriptionUpgradePayInvoiceParams,
   buildSubscriptionUpgradeUpdateParams,
   calculateSubscriptionUpgradeDifference,
   getSubscriptionUpgradeIssue,
@@ -93,12 +96,12 @@ describe("buildSubscriptionUpgradeUpdateParams", () => {
   });
 });
 
-describe("buildSubscriptionUpgradeCheckoutParams", () => {
-  it("builds a one-time payment checkout for the plan difference", () => {
+describe("buildSubscriptionUpgradeInvoiceItemParams", () => {
+  it("builds a pending invoice item for the plan difference", () => {
     expect(
-      buildSubscriptionUpgradeCheckoutParams({
+      buildSubscriptionUpgradeInvoiceItemParams({
         amount: 1000,
-        appUrl: "https://app.example",
+        customerId: "cus_123",
         currency: "usd",
         currentProductUuid: "product_basic",
         localSubscriptionUuid: "local_sub",
@@ -112,20 +115,10 @@ describe("buildSubscriptionUpgradeCheckoutParams", () => {
         userUuid: "user_123",
       }),
     ).toEqual({
-      cancel_url: "https://app.example/dashboard?upgrade=cancelled",
-      client_reference_id: "user_123",
-      line_items: [
-        {
-          price_data: {
-            currency: "usd",
-            product_data: {
-              name: "Pro Plan upgrade difference",
-            },
-            unit_amount: 1000,
-          },
-          quantity: 1,
-        },
-      ],
+      amount: 1000,
+      currency: "usd",
+      customer: "cus_123",
+      description: "Pro Plan upgrade difference",
       metadata: {
         action: "upgrade",
         fromProductUuid: "product_basic",
@@ -138,8 +131,61 @@ describe("buildSubscriptionUpgradeCheckoutParams", () => {
         toProductUuid: "product_pro",
         userId: "user_123",
       },
-      mode: "payment",
-      success_url: "https://app.example/dashboard?upgrade=pending",
+      subscription: "sub_123",
+    });
+  });
+});
+
+describe("buildSubscriptionUpgradeInvoiceParams", () => {
+  it("builds an auto-collecting invoice for the pending upgrade item", () => {
+    const params = buildSubscriptionUpgradeInvoiceParams({
+      customerId: "cus_123",
+      currentProductUuid: "product_basic",
+      localSubscriptionUuid: "local_sub",
+      stripeSubscriptionId: "sub_123",
+      stripeSubscriptionItemId: "si_123",
+      subscriptionChangeUuid: "log_123",
+      targetPlatformPriceId: "price_pro",
+      targetPlatformProductId: "prod_pro",
+      targetProductUuid: "product_pro",
+      userUuid: "user_123",
+    });
+
+    expect(params).not.toHaveProperty("currency");
+    expect(params).not.toHaveProperty("pending_invoice_items_behavior");
+    expect(params).toEqual({
+      auto_advance: true,
+      collection_method: "charge_automatically",
+      customer: "cus_123",
+      metadata: {
+        action: "upgrade",
+        fromProductUuid: "product_basic",
+        localSubscriptionId: "local_sub",
+        stripeSubscriptionId: "sub_123",
+        stripeSubscriptionItemId: "si_123",
+        subscriptionChangeUuid: "log_123",
+        targetPlatformPriceId: "price_pro",
+        targetPlatformProductId: "prod_pro",
+        toProductUuid: "product_pro",
+        userId: "user_123",
+      },
+      subscription: "sub_123",
+    });
+  });
+});
+
+describe("buildSubscriptionUpgradeFinalizeInvoiceParams", () => {
+  it("keeps automatic collection enabled when finalizing the invoice immediately", () => {
+    expect(buildSubscriptionUpgradeFinalizeInvoiceParams()).toEqual({
+      auto_advance: true,
+    });
+  });
+});
+
+describe("buildSubscriptionUpgradePayInvoiceParams", () => {
+  it("pays the finalized invoice off-session with the default payment method", () => {
+    expect(buildSubscriptionUpgradePayInvoiceParams()).toEqual({
+      off_session: true,
     });
   });
 });

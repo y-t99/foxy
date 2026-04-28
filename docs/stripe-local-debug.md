@@ -161,8 +161,14 @@ The webhook route currently handles these events:
 - `customer.subscription.created`
 - `customer.subscription.updated`
 - `customer.subscription.deleted`
+- `invoice.open`
+- `invoice.finalized`
+- `invoice.paid`
 - `invoice.payment_succeeded`
 - `invoice.payment_failed`
+- `invoice.voided`
+- `invoice.uncollectible`
+- `invoice.marked_uncollectible`
 
 ## 6. Common Test Cards
 

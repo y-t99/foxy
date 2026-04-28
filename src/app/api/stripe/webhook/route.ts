@@ -10,6 +10,9 @@ import {
   isStripeEventProcessed,
   markCheckoutSessionExpired,
   markInvoicePaymentFailed,
+  markPendingUpgradeInvoiceOpen,
+  markPendingUpgradeInvoiceUncollectible,
+  markPendingUpgradeInvoiceVoided,
   markPendingUpgradePaymentFailed,
   markUpgradeCheckoutSessionExpired,
   recordStripeEvent,
@@ -49,7 +52,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ received: true });
   }
 
-  switch (event.type) {
+  const eventType = event.type as string;
+
+  switch (eventType) {
     case "checkout.session.completed": {
       const session = event.data.object as Stripe.Checkout.Session;
 
@@ -106,21 +111,22 @@ export async function POST(req: Request) {
     case "invoice.payment_succeeded": {
       const invoice = event.data.object as Stripe.Invoice;
       const subscriptionId = getInvoiceSubscriptionId(invoice);
+      const paidAt = new Date();
+      const completedUpgrade = await completePendingUpgradeForInvoice({
+        invoice,
+        paidAt,
+      });
 
-      if (subscriptionId) {
+      if (subscriptionId && !completedUpgrade) {
         const subscription = await retrieveSubscription(subscriptionId);
-        const paidAt = new Date();
-        const completedUpgrade = await completePendingUpgradeForInvoice({
-          invoice,
-          paidAt,
-          subscription,
-        });
 
-        if (!completedUpgrade) {
-          await syncStripeSubscription(subscription, {
-            paidAt,
-          });
-        } else if (subscription.cancel_at_period_end) {
+        await syncStripeSubscription(subscription, {
+          paidAt,
+        });
+      } else if (subscriptionId && completedUpgrade) {
+        const subscription = await retrieveSubscription(subscriptionId);
+
+        if (subscription.cancel_at_period_end) {
           await getStripe().subscriptions.update(subscriptionId, {
             cancel_at_period_end: false,
           });
@@ -129,20 +135,34 @@ export async function POST(req: Request) {
 
       break;
     }
+    case "invoice.open":
+    case "invoice.finalized": {
+      await markPendingUpgradeInvoiceOpen(event.data.object as Stripe.Invoice);
+      break;
+    }
     case "invoice.payment_failed": {
       const invoice = event.data.object as Stripe.Invoice;
       const subscriptionId = getInvoiceSubscriptionId(invoice);
 
-      if (subscriptionId) {
-        const failedUpgrade = await markPendingUpgradePaymentFailed(invoice);
+      const failedUpgrade = await markPendingUpgradePaymentFailed(invoice);
 
-        if (!failedUpgrade) {
-          const subscription = await retrieveSubscription(subscriptionId);
-          await syncStripeSubscription(subscription);
-          await markInvoicePaymentFailed(subscriptionId);
-        }
+      if (subscriptionId && !failedUpgrade) {
+        const subscription = await retrieveSubscription(subscriptionId);
+        await syncStripeSubscription(subscription);
+        await markInvoicePaymentFailed(subscriptionId);
       }
 
+      break;
+    }
+    case "invoice.voided": {
+      await markPendingUpgradeInvoiceVoided(event.data.object as Stripe.Invoice);
+      break;
+    }
+    case "invoice.uncollectible":
+    case "invoice.marked_uncollectible": {
+      await markPendingUpgradeInvoiceUncollectible(
+        event.data.object as Stripe.Invoice,
+      );
       break;
     }
     default:
