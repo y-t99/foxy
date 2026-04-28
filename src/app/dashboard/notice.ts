@@ -23,8 +23,22 @@ export function getDashboardNotice({
 }) {
   if (upgrade === "pending") {
     return {
-      text: "Upgrade confirmation is pending. Your current plan stays active until Stripe confirms the upgrade payment.",
+      text: "Upgrade difference payment started. Your current plan stays active until payment and upgrade completion are confirmed.",
       tone: "success" as const satisfies NoticeTone,
+    };
+  }
+
+  if (upgrade === "cancelled") {
+    return {
+      text: "Upgrade payment was cancelled. Your current plan remains active.",
+      tone: "caution" as const satisfies NoticeTone,
+    };
+  }
+
+  if (upgrade === "upgrade_failed") {
+    return {
+      text: "Upgrade payment was received, but the subscription update did not complete. Your current plan remains active while support reviews it.",
+      tone: "caution" as const satisfies NoticeTone,
     };
   }
 

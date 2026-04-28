@@ -42,8 +42,32 @@ describe("dashboard checkout notice", () => {
         upgrade: "pending",
       }),
     ).toEqual({
-      text: "Upgrade confirmation is pending. Your current plan stays active until Stripe confirms the upgrade payment.",
+      text: "Upgrade difference payment started. Your current plan stays active until payment and upgrade completion are confirmed.",
       tone: "success",
+    });
+  });
+
+  it("shows a cancellation notice for abandoned upgrade checkout", () => {
+    expect(
+      getDashboardNotice({
+        hasAccess: true,
+        upgrade: "cancelled",
+      }),
+    ).toEqual({
+      text: "Upgrade payment was cancelled. Your current plan remains active.",
+      tone: "caution",
+    });
+  });
+
+  it("shows a manual handling notice when payment succeeded but upgrade failed", () => {
+    expect(
+      getDashboardNotice({
+        hasAccess: true,
+        upgrade: "upgrade_failed",
+      }),
+    ).toEqual({
+      text: "Upgrade payment was received, but the subscription update did not complete. Your current plan remains active while support reviews it.",
+      tone: "caution",
     });
   });
 });

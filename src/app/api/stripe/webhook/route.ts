@@ -4,12 +4,14 @@ import { getRequiredEnv } from "@/lib/env";
 import { getStripe } from "@/lib/stripe";
 import {
   completePendingUpgradeForInvoice,
+  completePendingUpgradeForCheckoutSession,
   getInvoiceSubscriptionId,
   hasPendingUpgradeForStripeSubscription,
   isStripeEventProcessed,
   markCheckoutSessionExpired,
   markInvoicePaymentFailed,
   markPendingUpgradePaymentFailed,
+  markUpgradeCheckoutSessionExpired,
   recordStripeEvent,
   syncStripeSubscription,
 } from "@/lib/stripe-sync";
@@ -50,6 +52,16 @@ export async function POST(req: Request) {
   switch (event.type) {
     case "checkout.session.completed": {
       const session = event.data.object as Stripe.Checkout.Session;
+
+      if (
+        await completePendingUpgradeForCheckoutSession({
+          paidAt: new Date(),
+          session,
+        })
+      ) {
+        break;
+      }
+
       const subscriptionId =
         typeof session.subscription === "string"
           ? session.subscription
@@ -68,9 +80,12 @@ export async function POST(req: Request) {
       break;
     }
     case "checkout.session.expired": {
-      await markCheckoutSessionExpired(
-        event.data.object as Stripe.Checkout.Session,
-      );
+      const session = event.data.object as Stripe.Checkout.Session;
+
+      if (!(await markUpgradeCheckoutSessionExpired(session))) {
+        await markCheckoutSessionExpired(session);
+      }
+
       break;
     }
     case "customer.subscription.created":

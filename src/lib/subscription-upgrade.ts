@@ -1,5 +1,5 @@
 import type Stripe from "stripe";
-import { getRequiredEnv } from "@/lib/env";
+import { getAppUrl, getRequiredEnv } from "@/lib/env";
 import {
   ensureSubscriptionProduct,
   getSubscriptionProductByKey,
@@ -44,6 +44,7 @@ export function buildSubscriptionUpgradeUpdateParams({
   targetPlatformPriceId: string;
 }): Stripe.SubscriptionUpdateParams {
   return {
+    cancel_at_period_end: false,
     expand: ["latest_invoice"],
     items: [
       {
@@ -51,13 +52,97 @@ export function buildSubscriptionUpgradeUpdateParams({
         price: targetPlatformPriceId,
       },
     ],
-    payment_behavior: "pending_if_incomplete",
-    proration_behavior: "always_invoice",
+    payment_behavior: "error_if_incomplete",
+    proration_behavior: "none",
   };
 }
 
-function stripeInvoice(value: Stripe.Subscription["latest_invoice"]) {
-  return typeof value === "object" && value !== null ? value : null;
+export function buildSubscriptionUpgradeCheckoutParams({
+  amount,
+  appUrl,
+  currency,
+  currentProductUuid,
+  localSubscriptionUuid,
+  stripeSubscriptionId,
+  stripeSubscriptionItemId,
+  subscriptionChangeUuid,
+  targetPlatformPriceId,
+  targetPlatformProductId,
+  targetProductName,
+  targetProductUuid,
+  userUuid,
+}: {
+  amount: number;
+  appUrl: string;
+  currency: string;
+  currentProductUuid: string;
+  localSubscriptionUuid: string;
+  stripeSubscriptionId: string;
+  stripeSubscriptionItemId: string;
+  subscriptionChangeUuid: string;
+  targetPlatformPriceId: string;
+  targetPlatformProductId: string;
+  targetProductName: string;
+  targetProductUuid: string;
+  userUuid: string;
+}): Stripe.Checkout.SessionCreateParams {
+  return {
+    cancel_url: `${appUrl}/dashboard?upgrade=cancelled`,
+    client_reference_id: userUuid,
+    line_items: [
+      {
+        price_data: {
+          currency,
+          product_data: {
+            name: `${targetProductName} upgrade difference`,
+          },
+          unit_amount: amount,
+        },
+        quantity: 1,
+      },
+    ],
+    metadata: {
+      action: "upgrade",
+      fromProductUuid: currentProductUuid,
+      localSubscriptionId: localSubscriptionUuid,
+      stripeSubscriptionId,
+      stripeSubscriptionItemId,
+      subscriptionChangeUuid,
+      targetPlatformPriceId,
+      targetPlatformProductId,
+      toProductUuid: targetProductUuid,
+      userId: userUuid,
+    },
+    mode: "payment",
+    success_url: `${appUrl}/dashboard?upgrade=pending`,
+  };
+}
+
+export function calculateSubscriptionUpgradeDifference({
+  current,
+  target,
+}: {
+  current: Pick<Stripe.Price, "currency" | "unit_amount">;
+  target: Pick<Stripe.Price, "currency" | "unit_amount">;
+}) {
+  if (
+    current.currency !== target.currency ||
+    current.unit_amount == null ||
+    target.unit_amount == null
+  ) {
+    return null;
+  }
+
+  const amount = target.unit_amount - current.unit_amount;
+
+  if (amount <= 0) {
+    return null;
+  }
+
+  return {
+    amount,
+    currency: target.currency,
+  };
 }
 
 export function getSubscriptionUpgradeIssue({
@@ -158,7 +243,7 @@ async function validateStripePrice({
       price: stripePrice,
     });
 
-    return priceIssue;
+    return priceIssue ? null : stripePrice;
   } catch (error) {
     if (isStripeSdkError(error)) {
       throw new SubscriptionUpgradeError("stripe_api");
@@ -170,6 +255,12 @@ async function validateStripePrice({
 
 function getFirstSubscriptionItemId(subscription: Stripe.Subscription) {
   return subscription.items.data[0]?.id ?? null;
+}
+
+function getFirstSubscriptionItemPrice(subscription: Stripe.Subscription) {
+  const price = subscription.items.data[0]?.price;
+
+  return typeof price === "object" && price !== null ? price : null;
 }
 
 export async function createSubscriptionUpgradeSession({
@@ -217,12 +308,12 @@ export async function createSubscriptionUpgradeSession({
     throw new SubscriptionUpgradeError("subscription_missing");
   }
 
-  const priceIssue = await validateStripePrice({
+  const targetStripePrice = await validateStripePrice({
     platformPriceId: targetPlatformPriceId,
     platformProductId: targetPlatformProductId,
   });
 
-  if (priceIssue) {
+  if (!targetStripePrice) {
     throw new SubscriptionUpgradeError("stripe_api");
   }
 
@@ -241,9 +332,19 @@ export async function createSubscriptionUpgradeSession({
     throw error;
   }
   const itemId = getFirstSubscriptionItemId(stripeSubscription);
+  const currentStripePrice = getFirstSubscriptionItemPrice(stripeSubscription);
 
-  if (!itemId) {
+  if (!itemId || !currentStripePrice) {
     throw new SubscriptionUpgradeError("subscription_missing");
+  }
+
+  const difference = calculateSubscriptionUpgradeDifference({
+    current: currentStripePrice,
+    target: targetStripePrice,
+  });
+
+  if (!difference) {
+    throw new SubscriptionUpgradeError("stripe_api");
   }
 
   const subscriptionLog = await prisma.subscriptionLog.create({
@@ -251,7 +352,11 @@ export async function createSubscriptionUpgradeSession({
       action: "upgrade",
       platform: "stripe",
       result: {
+        differenceAmount: difference.amount,
+        differenceCurrency: difference.currency,
         fromProductUuid: subscription.productUuid,
+        stripeSubscriptionId: stripeSubscription.id,
+        stripeSubscriptionItemId: itemId,
         targetPlatformPriceId,
         targetPlatformProductId,
         toProductUuid: target.product.uuid,
@@ -262,23 +367,40 @@ export async function createSubscriptionUpgradeSession({
     },
   });
 
-  let updatedStripeSubscription: Stripe.Subscription;
+  let checkoutSession: Stripe.Checkout.Session;
+  const checkoutParams = buildSubscriptionUpgradeCheckoutParams({
+    amount: difference.amount,
+    appUrl: getAppUrl(),
+    currency: difference.currency,
+    currentProductUuid: subscription.productUuid,
+    localSubscriptionUuid: subscription.uuid,
+    stripeSubscriptionId: stripeSubscription.id,
+    stripeSubscriptionItemId: itemId,
+    subscriptionChangeUuid: subscriptionLog.uuid,
+    targetPlatformPriceId,
+    targetPlatformProductId,
+    targetProductName: target.product.name,
+    targetProductUuid: target.product.uuid,
+    userUuid,
+  });
+
+  if (subscription.platform.platformCustomerId) {
+    checkoutParams.customer = subscription.platform.platformCustomerId;
+  }
 
   try {
-    updatedStripeSubscription = await getStripe().subscriptions.update(
-      stripeSubscription.id,
-      buildSubscriptionUpgradeUpdateParams({
-        itemId,
-        targetPlatformPriceId,
-      }),
-    );
+    checkoutSession = await getStripe().checkout.sessions.create(checkoutParams);
   } catch (error) {
     await prisma.subscriptionLog.update({
       data: {
         result: {
+          differenceAmount: difference.amount,
+          differenceCurrency: difference.currency,
           failedAt: new Date().toISOString(),
           failureReason: "stripe_api",
           fromProductUuid: subscription.productUuid,
+          stripeSubscriptionId: stripeSubscription.id,
+          stripeSubscriptionItemId: itemId,
           targetPlatformPriceId,
           targetPlatformProductId,
           toProductUuid: target.product.uuid,
@@ -295,15 +417,15 @@ export async function createSubscriptionUpgradeSession({
     throw error;
   }
 
-  const latestInvoice = stripeInvoice(updatedStripeSubscription.latest_invoice);
-
   await prisma.subscriptionLog.update({
     data: {
       result: {
+        checkoutSessionId: checkoutSession.id,
+        differenceAmount: difference.amount,
+        differenceCurrency: difference.currency,
         fromProductUuid: subscription.productUuid,
-        hostedInvoiceUrl: latestInvoice?.hosted_invoice_url ?? null,
-        invoiceId: latestInvoice?.id ?? null,
-        stripeSubscriptionId: updatedStripeSubscription.id,
+        stripeSubscriptionId: stripeSubscription.id,
+        stripeSubscriptionItemId: itemId,
         targetPlatformPriceId,
         targetPlatformProductId,
         toProductUuid: target.product.uuid,
@@ -313,7 +435,7 @@ export async function createSubscriptionUpgradeSession({
   });
 
   return {
-    checkoutUrl: latestInvoice?.hosted_invoice_url ?? null,
+    checkoutUrl: checkoutSession.url ?? null,
     subscriptionChangeUuid: subscriptionLog.uuid,
   };
 }
