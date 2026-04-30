@@ -19,7 +19,10 @@ import {
 import { ShellHeader } from "@/components/shell-header";
 import { StatusStrip } from "@/components/status-strip";
 import { getStripeCheckoutConfigStatus } from "@/lib/env";
-import { SUBSCRIPTION_PRODUCTS } from "@/lib/products";
+import {
+  isSubscriptionProductUpgradeTarget,
+  SUBSCRIPTION_PRODUCTS,
+} from "@/lib/products";
 import { prisma } from "@/lib/prisma";
 import { hasSubscriptionAccess } from "@/lib/subscription-access";
 
@@ -155,10 +158,18 @@ export default async function DashboardPage({
   const currentProductLevel =
     currentProductConfig?.level ?? subscription?.product.level ?? 0;
   const upgradeProducts =
-    hasAccess && subscription
+    hasAccess && subscription && currentProductConfig
       ? SUBSCRIPTION_PRODUCTS.filter(
-          (product) => product.level > currentProductLevel,
+          (product) =>
+            isSubscriptionProductUpgradeTarget({
+              currentProduct: currentProductConfig,
+              targetProduct: product,
+            }),
         )
+      : hasAccess && subscription
+        ? SUBSCRIPTION_PRODUCTS.filter(
+            (product) => product.level > currentProductLevel,
+          )
       : [];
   const generationFlow: DashboardFlowItem[] = hasAccess
     ? [

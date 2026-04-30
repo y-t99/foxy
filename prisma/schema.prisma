@@ -53,7 +53,7 @@ model ProductPlatform {
   product           Product  @relation(fields: [productUuid], references: [uuid], onDelete: Cascade)
 
   @@unique([productUuid, platform])
-  @@unique([platform, platformProductId])
+  @@index([platform, platformProductId])
   @@unique([platform, platformPriceId])
   @@map("product_platforms")
 }

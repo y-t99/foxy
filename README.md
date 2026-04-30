@@ -42,10 +42,15 @@ STRIPE_PRO_PRICE_ID="price_1TQqAyRxCAAlii2EGGRZGBxT"
 Keep real Stripe secrets only in `.env`. After local verification, rotate any
 test secret or webhook secret that was shared outside Stripe.
 
-The app offers Basic Plan at $10.00 and Pro Plan at $20.00 USD. For
-`subscription` mode, each configured price ID must point to a recurring Stripe
-price. A one-time price cannot be used to create subscription Checkout
-Sessions.
+The app offers Basic Plan at $10.00, Pro Plan at $20.00 USD, Basic Plan Annual
+at $100.00 USD, and Pro Plan Annual at $200.00 USD. Annual prices are managed
+as product platform mappings in the app catalog:
+
+- Basic Plan Annual: `price_1TRnklRxCAAlii2EMOddBstc`
+- Pro Plan Annual: `price_1TRnlMRxCAAlii2EICpMtBjB`
+
+For `subscription` mode, each price ID must point to a recurring Stripe price.
+A one-time price cannot be used to create subscription Checkout Sessions.
 
 Generate an auth secret with:
 

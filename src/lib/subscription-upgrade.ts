@@ -1,8 +1,10 @@
 import type Stripe from "stripe";
-import { getRequiredEnv } from "@/lib/env";
 import {
   ensureSubscriptionProduct,
   getSubscriptionProductByKey,
+  getSubscriptionProductConfiguredPlatformProductId,
+  getSubscriptionProductPlatformPriceId,
+  resolveStripeProductIdFromPrice,
   type SubscriptionProductKey,
 } from "@/lib/products";
 import { prisma } from "@/lib/prisma";
@@ -17,10 +19,12 @@ export type SubscriptionUpgradeIssue =
 
 type SubscriptionUpgradeInput = {
   cancelAtPeriodEnd?: boolean | null;
+  currentIntervalMonths?: number | null;
   currentPeriodEnd?: Date | null;
   currentProductLevel?: number | null;
   now?: Date;
   status?: string | null;
+  targetIntervalMonths?: number | null;
   targetProductLevel?: number | null;
 };
 
@@ -42,6 +46,18 @@ type SubscriptionUpgradeMetadataInput = {
   userUuid: string;
 };
 
+const SUBSCRIPTION_UPGRADE_ADJUSTMENT_PRODUCT_ID = "prod_UQeecNrskPRv96";
+
+type StripeObjectRef = string | { id: string } | null | undefined;
+type StripePriceForUpgrade = {
+  currency: string;
+  recurring: {
+    interval?: string;
+    interval_count?: number | null;
+  } | null;
+  unit_amount: number | null;
+};
+
 export class SubscriptionUpgradeError extends Error {
   constructor(public readonly issue: SubscriptionUpgradeIssue | "stripe_api") {
     super(issue);
@@ -49,13 +65,53 @@ export class SubscriptionUpgradeError extends Error {
 }
 
 export function buildSubscriptionUpgradeUpdateParams({
+  creditAmount,
+  currency,
+  currentProductUuid,
   itemId,
+  localSubscriptionUuid,
+  stripeSubscriptionId,
+  subscriptionChangeUuid,
   targetPlatformPriceId,
+  targetPlatformProductId,
+  targetProductUuid,
+  userUuid,
 }: {
+  creditAmount: number;
+  currency: string;
+  currentProductUuid: string;
   itemId: string;
+  localSubscriptionUuid: string;
+  stripeSubscriptionId: string;
+  subscriptionChangeUuid: string;
   targetPlatformPriceId: string;
+  targetPlatformProductId: string;
+  targetProductUuid: string;
+  userUuid: string;
 }): Stripe.SubscriptionUpdateParams {
   return {
+    add_invoice_items: [
+      {
+        metadata: buildSubscriptionUpgradeMetadata({
+          currentProductUuid,
+          localSubscriptionUuid,
+          stripeSubscriptionId,
+          stripeSubscriptionItemId: itemId,
+          subscriptionChangeUuid,
+          targetPlatformPriceId,
+          targetPlatformProductId,
+          targetProductUuid,
+          userUuid,
+        }),
+        price_data: {
+          currency,
+          product: SUBSCRIPTION_UPGRADE_ADJUSTMENT_PRODUCT_ID,
+          unit_amount: -creditAmount,
+        },
+        quantity: 1,
+      },
+    ],
+    billing_cycle_anchor: "now",
     cancel_at_period_end: false,
     expand: ["latest_invoice"],
     items: [
@@ -94,125 +150,77 @@ function buildSubscriptionUpgradeMetadata({
   };
 }
 
-export function buildSubscriptionUpgradeInvoiceItemParams({
-  amount,
-  customerId,
-  currency,
-  currentProductUuid,
-  localSubscriptionUuid,
-  stripeSubscriptionId,
-  stripeSubscriptionItemId,
-  subscriptionChangeUuid,
-  targetPlatformPriceId,
-  targetPlatformProductId,
-  targetProductName,
-  targetProductUuid,
-  userUuid,
-}: {
-  amount: number;
-  customerId: string;
-  currency: string;
-  currentProductUuid: string;
-  localSubscriptionUuid: string;
-  stripeSubscriptionId: string;
-  stripeSubscriptionItemId: string;
-  subscriptionChangeUuid: string;
-  targetPlatformPriceId: string;
-  targetPlatformProductId: string;
-  targetProductName: string;
-  targetProductUuid: string;
-  userUuid: string;
-}): Stripe.InvoiceItemCreateParams {
-  return {
-    amount,
-    currency,
-    customer: customerId,
-    description: `${targetProductName} upgrade difference`,
-    metadata: buildSubscriptionUpgradeMetadata({
-      currentProductUuid,
-      localSubscriptionUuid,
-      stripeSubscriptionId,
-      stripeSubscriptionItemId,
-      subscriptionChangeUuid,
-      targetPlatformPriceId,
-      targetPlatformProductId,
-      targetProductUuid,
-      userUuid,
-    }),
-    subscription: stripeSubscriptionId,
-  };
+function stripeObjectId(value: StripeObjectRef) {
+  if (!value) {
+    return null;
+  }
+
+  return typeof value === "string" ? value : value.id;
 }
 
-export function buildSubscriptionUpgradeInvoiceParams({
-  customerId,
-  currentProductUuid,
-  localSubscriptionUuid,
-  stripeSubscriptionId,
-  stripeSubscriptionItemId,
-  subscriptionChangeUuid,
-  targetPlatformPriceId,
-  targetPlatformProductId,
-  targetProductUuid,
-  userUuid,
-}: {
-  customerId: string;
-  currentProductUuid: string;
-  localSubscriptionUuid: string;
-  stripeSubscriptionId: string;
-  stripeSubscriptionItemId: string;
-  subscriptionChangeUuid: string;
-  targetPlatformPriceId: string;
-  targetPlatformProductId: string;
-  targetProductUuid: string;
-  userUuid: string;
-}): Stripe.InvoiceCreateParams {
-  return {
-    auto_advance: true,
-    collection_method: "charge_automatically",
-    customer: customerId,
-    metadata: buildSubscriptionUpgradeMetadata({
-      currentProductUuid,
-      localSubscriptionUuid,
-      stripeSubscriptionId,
-      stripeSubscriptionItemId,
-      subscriptionChangeUuid,
-      targetPlatformPriceId,
-      targetPlatformProductId,
-      targetProductUuid,
-      userUuid,
-    }),
-    subscription: stripeSubscriptionId,
-  };
+function unixToDate(value: number | null | undefined) {
+  return typeof value === "number" ? new Date(value * 1000) : null;
 }
 
-export function buildSubscriptionUpgradeFinalizeInvoiceParams(): Stripe.InvoiceFinalizeInvoiceParams {
-  return {
-    auto_advance: true,
-  };
-}
+function getSubscriptionPeriod(subscription: Stripe.Subscription) {
+  const item = subscription.items.data[0];
 
-export function buildSubscriptionUpgradePayInvoiceParams(): Stripe.InvoicePayParams {
   return {
-    off_session: true,
+    currentPeriodEnd: unixToDate(item?.current_period_end),
+    currentPeriodStart: unixToDate(item?.current_period_start),
   };
 }
 
 export function calculateSubscriptionUpgradeDifference({
   current,
+  currentPeriodEnd,
+  currentPeriodStart,
+  now = new Date(),
   target,
 }: {
-  current: Pick<Stripe.Price, "currency" | "unit_amount">;
-  target: Pick<Stripe.Price, "currency" | "unit_amount">;
+  current: StripePriceForUpgrade;
+  currentPeriodEnd: Date;
+  currentPeriodStart: Date;
+  now?: Date;
+  target: StripePriceForUpgrade;
 }) {
   if (
     current.currency !== target.currency ||
     current.unit_amount == null ||
-    target.unit_amount == null
+    target.unit_amount == null ||
+    currentPeriodEnd.getTime() <= currentPeriodStart.getTime()
   ) {
     return null;
   }
 
-  const amount = target.unit_amount - current.unit_amount;
+  const currentIntervalMonths = getStripePriceIntervalMonths(current);
+  const targetIntervalMonths = getStripePriceIntervalMonths(target);
+
+  if (!currentIntervalMonths || !targetIntervalMonths) {
+    return null;
+  }
+
+  const effectiveNow = new Date(
+    Math.min(
+      Math.max(now.getTime(), currentPeriodStart.getTime()),
+      currentPeriodEnd.getTime(),
+    ),
+  );
+  const usedCompleteMonths = getCompleteUtcMonthsBetween(
+    currentPeriodStart,
+    effectiveNow,
+  );
+  const remainingMonths = Math.max(
+    currentIntervalMonths - Math.min(usedCompleteMonths, currentIntervalMonths),
+    0,
+  );
+
+  if (remainingMonths <= 0) {
+    return null;
+  }
+
+  const currentMonthlyAmount = current.unit_amount / currentIntervalMonths;
+  const amount = Math.round(currentMonthlyAmount * remainingMonths);
 
   if (amount <= 0) {
     return null;
@@ -224,11 +232,70 @@ export function calculateSubscriptionUpgradeDifference({
   };
 }
 
+function getStripePriceIntervalMonths(price: StripePriceForUpgrade) {
+  const intervalCount = price.recurring?.interval_count ?? 1;
+
+  if (!Number.isInteger(intervalCount) || intervalCount <= 0) {
+    return null;
+  }
+
+  if (price.recurring?.interval === "month") {
+    return intervalCount;
+  }
+
+  if (price.recurring?.interval === "year") {
+    return intervalCount * 12;
+  }
+
+  return null;
+}
+
+function addUtcMonths(date: Date, months: number) {
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth() + months;
+  const targetMonthStart = new Date(Date.UTC(year, month, 1));
+  const nextMonthStart = new Date(Date.UTC(year, month + 1, 1));
+  const lastDayOfTargetMonth = new Date(
+    nextMonthStart.getTime() - 24 * 60 * 60 * 1000,
+  ).getUTCDate();
+  const day = Math.min(date.getUTCDate(), lastDayOfTargetMonth);
+
+  return new Date(
+    Date.UTC(
+      targetMonthStart.getUTCFullYear(),
+      targetMonthStart.getUTCMonth(),
+      day,
+      date.getUTCHours(),
+      date.getUTCMinutes(),
+      date.getUTCSeconds(),
+      date.getUTCMilliseconds(),
+    ),
+  );
+}
+
+function getCompleteUtcMonthsBetween(start: Date, end: Date) {
+  if (end.getTime() <= start.getTime()) {
+    return 0;
+  }
+
+  let months =
+    (end.getUTCFullYear() - start.getUTCFullYear()) * 12 +
+    (end.getUTCMonth() - start.getUTCMonth());
+
+  if (addUtcMonths(start, months).getTime() > end.getTime()) {
+    months -= 1;
+  }
+
+  return Math.max(months, 0);
+}
+
 export function getSubscriptionUpgradeIssue({
+  currentIntervalMonths,
   currentPeriodEnd,
   currentProductLevel,
   now = new Date(),
   status,
+  targetIntervalMonths,
   targetProductLevel,
 }: SubscriptionUpgradeInput): SubscriptionUpgradeIssue | null {
   if (!status || currentProductLevel == null || targetProductLevel == null) {
@@ -243,7 +310,13 @@ export function getSubscriptionUpgradeIssue({
     return "subscription_expired";
   }
 
-  if (targetProductLevel <= currentProductLevel) {
+  if (
+    targetProductLevel < currentProductLevel ||
+    (targetProductLevel === currentProductLevel &&
+      (!currentIntervalMonths ||
+        !targetIntervalMonths ||
+        targetIntervalMonths <= currentIntervalMonths))
+  ) {
     return "target_not_higher";
   }
 
@@ -309,16 +382,16 @@ async function getTargetProduct({
 }
 
 async function validateStripePrice({
+  expectedProductId,
   platformPriceId,
-  platformProductId,
 }: {
+  expectedProductId: string | null;
   platformPriceId: string;
-  platformProductId: string;
 }) {
   try {
     const stripePrice = await getStripe().prices.retrieve(platformPriceId);
     const priceIssue = getStripeSubscriptionPriceIssue({
-      expectedProductId: platformProductId,
+      expectedProductId,
       price: stripePrice,
     });
 
@@ -354,13 +427,32 @@ export async function createSubscriptionUpgradeSession({
   }
 
   const targetPlatformPriceId =
-    target.productConfig?.env.priceId != null
-      ? getRequiredEnv(target.productConfig.env.priceId)
+    target.productConfig
+      ? getSubscriptionProductPlatformPriceId(target.productConfig)
       : target.platform.platformPriceId;
+  const configuredTargetPlatformProductId = target.productConfig
+    ? getSubscriptionProductConfiguredPlatformProductId(target.productConfig)
+    : target.platform.platformProductId;
+  const expectedTargetPlatformProductId =
+    configuredTargetPlatformProductId ?? target.platform.platformProductId;
+
+  const targetStripePrice = await validateStripePrice({
+    expectedProductId: expectedTargetPlatformProductId,
+    platformPriceId: targetPlatformPriceId,
+  });
+
+  if (!targetStripePrice) {
+    throw new SubscriptionUpgradeError("stripe_api");
+  }
+
   const targetPlatformProductId =
-    target.productConfig?.env.productId != null
-      ? getRequiredEnv(target.productConfig.env.productId)
-      : target.platform.platformProductId;
+    configuredTargetPlatformProductId ??
+    resolveStripeProductIdFromPrice(targetStripePrice) ??
+    target.platform.platformProductId;
+
+  if (!targetPlatformProductId) {
+    throw new SubscriptionUpgradeError("stripe_api");
+  }
 
   const subscription = await prisma.subscription.findFirst({
     include: {
@@ -371,33 +463,12 @@ export async function createSubscriptionUpgradeSession({
     where: { userUuid },
   });
 
-  const issue = getSubscriptionUpgradeIssue({
-    cancelAtPeriodEnd: subscription?.cancelAtPeriodEnd,
-    currentPeriodEnd: subscription?.currentPeriodEnd,
-    currentProductLevel: subscription?.product.level,
-    status: subscription?.status,
-    targetProductLevel: target.product.level,
-  });
-
-  if (issue) {
-    throw new SubscriptionUpgradeError(issue);
-  }
-
   if (!subscription?.platform?.platformSubscriptionId) {
     throw new SubscriptionUpgradeError("subscription_missing");
   }
 
   if (!subscription.platform.platformCustomerId) {
     throw new SubscriptionUpgradeError("subscription_missing");
-  }
-
-  const targetStripePrice = await validateStripePrice({
-    platformPriceId: targetPlatformPriceId,
-    platformProductId: targetPlatformProductId,
-  });
-
-  if (!targetStripePrice) {
-    throw new SubscriptionUpgradeError("stripe_api");
   }
 
   let stripeSubscription: Stripe.Subscription;
@@ -416,17 +487,39 @@ export async function createSubscriptionUpgradeSession({
   }
   const itemId = getFirstSubscriptionItemId(stripeSubscription);
   const currentStripePrice = getFirstSubscriptionItemPrice(stripeSubscription);
+  const currentPeriod = getSubscriptionPeriod(stripeSubscription);
 
-  if (!itemId || !currentStripePrice) {
+  if (
+    !itemId ||
+    !currentStripePrice ||
+    !currentPeriod.currentPeriodEnd ||
+    !currentPeriod.currentPeriodStart
+  ) {
     throw new SubscriptionUpgradeError("subscription_missing");
   }
 
-  const difference = calculateSubscriptionUpgradeDifference({
+  const issue = getSubscriptionUpgradeIssue({
+    cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+    currentIntervalMonths: getStripePriceIntervalMonths(currentStripePrice),
+    currentPeriodEnd: subscription.currentPeriodEnd,
+    currentProductLevel: subscription.product.level,
+    status: subscription.status,
+    targetIntervalMonths: getStripePriceIntervalMonths(targetStripePrice),
+    targetProductLevel: target.product.level,
+  });
+
+  if (issue) {
+    throw new SubscriptionUpgradeError(issue);
+  }
+
+  const credit = calculateSubscriptionUpgradeDifference({
     current: currentStripePrice,
+    currentPeriodEnd: currentPeriod.currentPeriodEnd,
+    currentPeriodStart: currentPeriod.currentPeriodStart,
     target: targetStripePrice,
   });
 
-  if (!difference) {
+  if (!credit) {
     throw new SubscriptionUpgradeError("stripe_api");
   }
 
@@ -435,8 +528,8 @@ export async function createSubscriptionUpgradeSession({
       action: "upgrade",
       platform: "stripe",
       result: {
-        differenceAmount: difference.amount,
-        differenceCurrency: difference.currency,
+        creditAmount: credit.amount,
+        creditCurrency: credit.currency,
         fromProductUuid: subscription.productUuid,
         stripeSubscriptionId: stripeSubscription.id,
         stripeSubscriptionItemId: itemId,
@@ -450,29 +543,14 @@ export async function createSubscriptionUpgradeSession({
     },
   });
 
-  let invoiceItem: Stripe.InvoiceItem | null = null;
-  let invoice: Stripe.Invoice | null = null;
-  const invoiceItemParams = buildSubscriptionUpgradeInvoiceItemParams({
-    amount: difference.amount,
-    customerId: subscription.platform.platformCustomerId,
-    currency: difference.currency,
+  let updatedStripeSubscription: Stripe.Subscription;
+  const updateParams = buildSubscriptionUpgradeUpdateParams({
+    creditAmount: credit.amount,
+    currency: credit.currency,
     currentProductUuid: subscription.productUuid,
+    itemId,
     localSubscriptionUuid: subscription.uuid,
     stripeSubscriptionId: stripeSubscription.id,
-    stripeSubscriptionItemId: itemId,
-    subscriptionChangeUuid: subscriptionLog.uuid,
-    targetPlatformPriceId,
-    targetPlatformProductId,
-    targetProductName: target.product.name,
-    targetProductUuid: target.product.uuid,
-    userUuid,
-  });
-  const invoiceParams = buildSubscriptionUpgradeInvoiceParams({
-    customerId: subscription.platform.platformCustomerId,
-    currentProductUuid: subscription.productUuid,
-    localSubscriptionUuid: subscription.uuid,
-    stripeSubscriptionId: stripeSubscription.id,
-    stripeSubscriptionItemId: itemId,
     subscriptionChangeUuid: subscriptionLog.uuid,
     targetPlatformPriceId,
     targetPlatformProductId,
@@ -481,36 +559,19 @@ export async function createSubscriptionUpgradeSession({
   });
 
   try {
-    invoiceItem = await getStripe().invoiceItems.create(invoiceItemParams);
-    invoice = await getStripe().invoices.create(invoiceParams);
-    invoice = await getStripe().invoices.finalizeInvoice(
-      invoice.id,
-      buildSubscriptionUpgradeFinalizeInvoiceParams(),
-    );
-    invoice = await getStripe().invoices.pay(
-      invoice.id,
-      buildSubscriptionUpgradePayInvoiceParams(),
+    updatedStripeSubscription = await getStripe().subscriptions.update(
+      stripeSubscription.id,
+      updateParams,
     );
   } catch (error) {
-    if (invoice?.id) {
-      await getStripe()
-        .invoices.update(invoice.id, { auto_advance: false })
-        .catch(() => null);
-    }
-
-    if (invoiceItem?.id) {
-      await getStripe().invoiceItems.del(invoiceItem.id).catch(() => null);
-    }
-
     await prisma.subscriptionLog.update({
       data: {
         result: {
-          differenceAmount: difference.amount,
-          differenceCurrency: difference.currency,
+          creditAmount: credit.amount,
+          creditCurrency: credit.currency,
           failedAt: new Date().toISOString(),
           failureReason: "stripe_api",
           fromProductUuid: subscription.productUuid,
-          invoiceId: invoice?.id,
           stripeSubscriptionId: stripeSubscription.id,
           stripeSubscriptionItemId: itemId,
           targetPlatformPriceId,
@@ -529,35 +590,48 @@ export async function createSubscriptionUpgradeSession({
     throw error;
   }
 
-  if (!invoiceItem) {
-    throw new SubscriptionUpgradeError("stripe_api");
-  }
+  const { currentPeriodEnd, currentPeriodStart } =
+    getSubscriptionPeriod(updatedStripeSubscription);
+  const completedAt = new Date();
+  const latestInvoiceId = stripeObjectId(
+    updatedStripeSubscription.latest_invoice as StripeObjectRef,
+  );
 
-  if (!invoice) {
-    throw new SubscriptionUpgradeError("stripe_api");
-  }
-
-  await prisma.subscriptionLog.update({
-    data: {
-      result: {
-        differenceAmount: difference.amount,
-        differenceCurrency: difference.currency,
-        fromProductUuid: subscription.productUuid,
-        invoiceId: invoice.id,
-        invoiceItemId: invoiceItem.id,
-        stripeSubscriptionId: stripeSubscription.id,
-        stripeSubscriptionItemId: itemId,
-        targetPlatformPriceId,
-        targetPlatformProductId,
-        toProductUuid: target.product.uuid,
+  await prisma.$transaction([
+    prisma.subscription.update({
+      data: {
+        cancelAtPeriodEnd: false,
+        canceledAt: null,
+        currentPeriodEnd,
+        currentPeriodStart,
+        latestPaymentAt: completedAt,
+        productUuid: target.product.uuid,
+        status: updatedStripeSubscription.status,
       },
-    },
-    where: { uuid: subscriptionLog.uuid },
-  });
+      where: { uuid: subscription.uuid },
+    }),
+    prisma.subscriptionLog.update({
+      data: {
+        result: {
+          completedAt: completedAt.toISOString(),
+          creditAmount: credit.amount,
+          creditCurrency: credit.currency,
+          fromProductUuid: subscription.productUuid,
+          invoiceId: latestInvoiceId,
+          stripeSubscriptionId: updatedStripeSubscription.id,
+          stripeSubscriptionItemId: itemId,
+          targetPlatformPriceId,
+          targetPlatformProductId,
+          toProductUuid: target.product.uuid,
+        },
+        status: "completed",
+      },
+      where: { uuid: subscriptionLog.uuid },
+    }),
+  ]);
 
   return {
     checkoutUrl: null,
-    invoiceId: invoice.id,
     subscriptionChangeUuid: subscriptionLog.uuid,
   };
 }

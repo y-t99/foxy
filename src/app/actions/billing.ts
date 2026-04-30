@@ -5,13 +5,15 @@ import type Stripe from "stripe";
 import { auth } from "@/auth";
 import {
   getAppUrl,
-  getRequiredEnv,
   getStripeCheckoutConfigStatus,
 } from "@/lib/env";
 import {
   DEFAULT_SUBSCRIPTION_PRODUCT_KEY,
   ensureSubscriptionProduct,
   getSubscriptionProductByKey,
+  getSubscriptionProductConfiguredPlatformProductId,
+  getSubscriptionProductPlatformPriceId,
+  resolveStripeProductIdFromPrice,
   type SubscriptionProductKey,
 } from "@/lib/products";
 import { prisma } from "@/lib/prisma";
@@ -69,8 +71,9 @@ export async function createCheckoutSession(
 
   const user = await getSignedInUser();
   const stripe = getStripe();
-  const configuredPriceId = getRequiredEnv(productConfig.env.priceId);
-  const configuredProductId = getRequiredEnv(productConfig.env.productId);
+  const configuredPriceId = getSubscriptionProductPlatformPriceId(productConfig);
+  const configuredProductId =
+    getSubscriptionProductConfiguredPlatformProductId(productConfig);
   let stripePrice;
 
   try {
@@ -84,7 +87,8 @@ export async function createCheckoutSession(
   }
 
   const priceIssue = getStripeSubscriptionPriceIssue({
-    expectedProductId: configuredProductId,
+    expectedProductId:
+      configuredProductId ?? resolveStripeProductIdFromPrice(stripePrice),
     price: stripePrice,
   });
 
@@ -92,7 +96,9 @@ export async function createCheckoutSession(
     redirect(`/dashboard?billing=${priceIssue}`);
   }
 
-  const product = await ensureSubscriptionProduct(productConfig.key);
+  const product = await ensureSubscriptionProduct(productConfig.key, {
+    stripePrice,
+  });
   const existingSubscription = await prisma.subscription.findFirst({
     orderBy: { updatedAt: "desc" },
     where: {
@@ -240,5 +246,5 @@ export async function createUpgradeSession(targetProductKey: SubscriptionProduct
     throw error;
   }
 
-  redirect(upgrade.checkoutUrl ?? "/dashboard?upgrade=pending");
+  redirect(upgrade.checkoutUrl ?? "/dashboard");
 }

@@ -21,14 +21,14 @@ export function getStripeSubscriptionPriceIssue({
   expectedProductId,
   price,
 }: {
-  expectedProductId: string;
+  expectedProductId: string | null;
   price: StripePriceLike;
 }): StripeSubscriptionPriceIssue | null {
   if (!price.recurring) {
     return "price_recurring";
   }
 
-  if (stripeObjectId(price.product) !== expectedProductId) {
+  if (expectedProductId && stripeObjectId(price.product) !== expectedProductId) {
     return "price_product";
   }
 

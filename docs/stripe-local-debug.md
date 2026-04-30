@@ -17,6 +17,9 @@ Before starting local debugging, make sure all of the following are true:
 - `STRIPE_PRICE_ID` is a **recurring** price. One-time prices will be rejected
   by the app.
 - `STRIPE_PRO_PRICE_ID` is also a **recurring** price.
+- Basic Annual and Pro Annual use the catalog price IDs
+  `price_1TRnklRxCAAlii2EMOddBstc` and `price_1TRnlMRxCAAlii2EICpMtBjB`;
+  the app resolves their Stripe product IDs from Stripe Price data.
 - The app is running locally at `http://localhost:3000` unless you intentionally
   changed the port.
 - Prisma migrations have been applied to the local SQLite database.
@@ -68,6 +71,8 @@ Notes:
 - Placeholder fragments such as `replace_me`, `replace-with`, or `change-me`
   are treated as missing config by the app.
 - `STRIPE_WEBHOOK_SECRET` is required for webhook signature verification.
+- Annual plan prices are configured in `src/lib/products.ts`, not as separate
+  per-plan environment variables.
 
 Generate `AUTH_SECRET` with:
 
@@ -79,14 +84,18 @@ openssl rand -base64 32
 
 Create or confirm the following resources in Stripe test mode:
 
-1. Products that represent the Basic and Pro subscriptions sold by this app.
-2. A recurring price under each product.
+1. Products that represent the Basic and Pro monthly and annual subscriptions
+   sold by this app.
+2. A recurring price under each product or Stripe product grouping.
 3. A test API key pair.
 
 Important constraints enforced by the code:
 
 - `STRIPE_PRICE_ID` must belong to `STRIPE_PRODUCT_ID`.
 - `STRIPE_PRO_PRICE_ID` must belong to `STRIPE_PRO_PRODUCT_ID`.
+- Annual price IDs must be accessible by the configured Stripe secret key; their
+  Stripe product IDs are read from Stripe Price data and stored in
+  `ProductPlatform`.
 - The price must include `recurring`; one-time prices do not work with this
   checkout flow.
 - The checkout session is created in `subscription` mode, so only subscription
@@ -161,14 +170,9 @@ The webhook route currently handles these events:
 - `customer.subscription.created`
 - `customer.subscription.updated`
 - `customer.subscription.deleted`
-- `invoice.open`
-- `invoice.finalized`
 - `invoice.paid`
 - `invoice.payment_succeeded`
 - `invoice.payment_failed`
-- `invoice.voided`
-- `invoice.uncollectible`
-- `invoice.marked_uncollectible`
 
 ## 6. Common Test Cards
 
@@ -280,6 +284,7 @@ Check:
 - the configured price is recurring
 - the configured price belongs to `STRIPE_PRODUCT_ID`
 - the configured Pro price belongs to `STRIPE_PRO_PRODUCT_ID`
+- annual catalog prices exist in the same Stripe account and are recurring
 
 ## 9. Minimum Success Criteria
 
